@@ -630,11 +630,224 @@ def calculate_qimen_info_with_ju(datetime_str):
     
     return result
 
+"""
+奇门遁甲排盘核心算法
+包含：
+1. 三奇六仪排列
+2. 地盘/天盘布局
+3. 八门九星布列
+4. 八神飞布
+"""
+
+from collections import deque
+
+# ================== 基础数据定义 ==================
+# 九宫方位映射（洛书数序）
+PALACE_MAP = {
+    1: ("坎", "北"), 8: ("艮", "东北"), 3: ("震", "东"),
+    4: ("巽", "东南"), 9: ("离", "南"), 2: ("坤", "西南"),
+    7: ("兑", "西"), 6: ("乾", "西北"), 5: ("中", "中央")
+}
+
+# 三奇六仪顺序（阳遁顺排，阴遁逆排）
+QIYI_ORDER = ["戊","己","庚","辛","壬","癸","丁","丙","乙"]
+
+# 八门顺序（休生伤杜景死惊开）
+MEN_ORDER = ["休","生","伤","杜","景","死","惊","开"]
+
+# 九星顺序（天蓬到天英）
+STAR_ORDER = ["天蓬","天任","天冲","天辅","天英","天芮","天柱","天心"]
+
+# 八神顺序（值符到太阴）
+SHEN_ORDER = ["值符","腾蛇","太阴","六合","白虎","玄武","九地","九天"]
+
+# ================== 核心排盘类 ==================
+class QimenPan:
+    def __init__(self, ju_number: int, is_yang: bool, current_time: datetime):
+        self.ju_number = ju_number  # 当前局数（1-18）
+        self.is_yang = is_yang      # 阴阳遁
+        self.time = current_time    # 排盘时间
+        
+        # 初始化九宫数据结构
+        self.palaces = {num: {
+            'earth': None,  # 地盘仪
+            'sky': None,    # 天盘仪
+            'door': None,    # 八门
+            'star': None,    # 九星
+            'shen': None     # 八神
+        } for num in PALACE_MAP}
+        
+    # ------------------ 核心排布方法 ------------------
+    def arrange_earth_plate(self):
+        """排列地盘（固定三奇六仪）"""
+        start_idx = (self.ju_number - 1) % 9
+        order = QIYI_ORDER if self.is_yang else QIYI_ORDER[::-1]
+        
+        # 按洛书数序排布
+        positions = [1,8,3,4,9,2,7,6,5]  # 阳遁顺行路线
+        if not self.is_yang:
+            positions = positions[::-1]  # 阴遁逆行路线
+            
+        for i, pos in enumerate(positions):
+            self.palaces[pos]['earth'] = order[(start_idx + i) % 9]
+
+    def arrange_sky_plate(self, shigan: str):
+        """排列天盘（时干对应）"""
+        # 获取值符
+        zhifu = "戊"  # 值符固定为戊
+        
+        # 找到值符初始位置（戊在地盘的位置）
+        # 先检查地盘是否已排好
+        if all(self.palaces[pos]['earth'] is None for pos in PALACE_MAP):
+            self.arrange_earth_plate()  # 如果地盘未排，先排地盘
+            
+        # 查找戊在地盘的位置
+        start_pos = None
+        for pos, data in self.palaces.items():
+            if data['earth'] == zhifu:
+                start_pos = pos
+                break
+                
+        # 如果找不到，使用默认位置
+        if start_pos is None:
+            start_pos = 5  # 默认中宫
+            print("警告：地盘中未找到值符'戊'，使用中宫作为默认位置")
+        
+        # 旋转天盘到时干位置
+        target_pos = self.get_shigan_position(shigan)
+        rotation = (target_pos - start_pos) % 9
+        
+        # 旋转三奇六仪
+        qiyi = []
+        for pos in [1,8,3,4,9,2,7,6,5]:  # 按洛书数序
+            qiyi.append(self.palaces[pos]['earth'])
+            
+        # 使用deque进行旋转
+        qiyi_deque = deque(qiyi)
+        qiyi_deque.rotate(rotation)
+        
+        # 更新天盘
+        for i, pos in enumerate([1,8,3,4,9,2,7,6,5]):
+            self.palaces[pos]['sky'] = qiyi_deque[i]
+
+    def arrange_doors(self, zhishi: str):
+        """排列八门核心算法"""
+        # 确定直使起始宫
+        start_pos = self.ju_number % 8 or 8
+        
+        # 按时辰推移（示例：每个时辰移动一宫）
+        time_diff = (self.time.hour // 2)  # 时辰数
+        offset = (start_pos + time_diff - 1) % 8
+        
+        # 八门布列
+        men_order = deque(MEN_ORDER)
+        men_order.rotate(-offset)
+        
+        # 跳过中宫（第五宫）
+        positions = [pos for pos in PALACE_MAP if pos != 5]
+        for pos, men in zip(positions, men_order):
+            self.palaces[pos]['door'] = men
+
+    def arrange_stars_and_shens(self):
+        """排列九星八神"""
+        # 值符星固定为天蓬星
+        zhifu_star = "天蓬"
+        
+        # 找到值符（戊）在天盘的位置
+        zhifu_pos = None
+        for pos, data in self.palaces.items():
+            if data['sky'] == "戊":
+                zhifu_pos = pos
+                break
+                
+        # 如果找不到，使用默认位置
+        if zhifu_pos is None:
+            zhifu_pos = 5  # 默认中宫
+            print("警告：天盘中未找到值符'戊'，使用中宫作为默认位置")
+        
+        # 九星布列（按洛书数序）
+        positions = [1,8,3,4,9,2,7,6,5]  # 洛书数序
+        if not self.is_yang:
+            positions = positions[::-1]  # 阴遁逆行
+            
+        # 计算天蓬星在洛书中的位置索引
+        zhifu_idx = positions.index(zhifu_pos)
+        
+        # 九星顺布
+        for i, pos in enumerate(positions):
+            if pos == 5:  # 中宫不布九星
+                continue
+                
+            # 计算当前宫位应放哪个星
+            star_idx = (i - zhifu_idx) % 8
+            if star_idx < 0:
+                star_idx += 8
+            self.palaces[pos]['star'] = STAR_ORDER[star_idx]
+        
+        # 八神布列
+        # 值符神固定在值符星所在宫
+        self.palaces[zhifu_pos]['shen'] = "值符"
+        
+        # 其余八神按阴阳遁顺逆布列
+        shen_order = SHEN_ORDER[1:]  # 除值符外的七神
+        shen_positions = [p for p in positions if p != zhifu_pos and p != 5]  # 除值符宫和中宫外的宫位
+        
+        # 根据阴阳遁确定顺序
+        if not self.is_yang:
+            shen_order = shen_order[::-1]
+            
+        # 布列八神
+        for i, pos in enumerate(shen_positions):
+            if i < len(shen_order):
+                self.palaces[pos]['shen'] = shen_order[i]
+
+    # ------------------ 辅助方法 ------------------
+    def get_xunshou(self):
+        """获取旬首（六甲旬首）"""
+        # 在实际应用中，应该根据日干支计算旬首
+        # 此处简化为固定返回"戊"作为值符
+        return "戊"
+
+    def get_shigan_position(self, shigan: str) -> int:
+        """获取时干对应的宫位"""
+        # 简化示例：甲乙属木对应震3宫
+        gan_positions = {
+            '甲':3, '乙':3, '丙':9, '丁':9, 
+            '戊':5, '己':5, '庚':7, '辛':7, 
+            '壬':1, '癸':1
+        }
+        return gan_positions.get(shigan[0], 5)
+
+    def print_pan(self):
+        """可视化输出盘面"""
+        print("【奇门遁甲排盘】")
+        print(f"时间：{self.time} 局数：{self.ju_number} 遁：{'阳' if self.is_yang else '阴'}")
+        for pos in [1,8,3,4,9,2,7,6,5]:
+            palace = self.palaces[pos]
+            print(f"{PALACE_MAP[pos][0]}宫({pos}): "
+                  f"地:{palace['earth']} 天:{palace['sky']} "
+                  f"门:{palace['door']} 星:{palace['star']} 神:{palace['shen']}")
 
 if __name__ == '__main__':
     test_time = "2025-02-28 15:30:00"
     result = calculate_qimen_info_with_ju(test_time)
     for key, value in result.items():
         print(f"{key}: {value}")
+    
+    # 初始化排盘对象
+    pan = QimenPan(
+        ju_number=result['局数'],
+        is_yang=result['遁局'] == '阳遁',
+        current_time=datetime.strptime(test_time, "%Y-%m-%d %H:%M:%S")
+    )
+    
+    # 逐步排布
+    pan.arrange_earth_plate()   # 布地盘
+    pan.arrange_sky_plate(result['时干支'])  # 传入时干支
+    pan.arrange_doors(result['日干支'])    # 传入日干支作为直使
+    pan.arrange_stars_and_shens()
+    
+    # 输出结果
+    pan.print_pan()
 
     #https://metaso.cn/search/8582554478871019520?q=%E6%88%91%E6%83%B3%E7%94%A8python%E5%AE%9E%E7%8E%B0%E5%A5%87%E9%97%A8%E9%81%81%E7%94%B2%E6%8E%92%E7%9B%98%EF%BC%8C%E4%B8%BB%E8%A6%81%E5%AE%9E%E7%8E%B0%E7%BD%AE%E6%B6%A6%E6%B3%95%EF%BC%8C%E8%AF%B7%E7%BB%99%E5%87%BA%E5%AE%9E%E7%8E%B0%E7%9A%84%E6%AD%A5%E9%AA%A4%E3%80%82%E8%A6%81%E6%B1%82%E6%98%AF%E8%BE%93%E5%85%A5%E6%97%B6%E9%97%B4%EF%BC%8C%E8%BE%93%E5%87%BA%E6%8E%92%E7%9B%98%E7%BB%93%E6%9E%9C
