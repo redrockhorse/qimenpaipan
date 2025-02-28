@@ -175,7 +175,7 @@ def get_yue_ganzhi(input_dt):
     
     # 获取对应节气及索引
     jieqi_time, jieqi_name = find_jieqi(input_dt)
-    print(jieqi_time, jieqi_name)
+    # print(jieqi_time, jieqi_name)
     idx = jieqi_order[jieqi_name]
     month_num = idx // 2  # 0-11对应正月到腊月
     
@@ -344,9 +344,296 @@ def calculate_qimen_info(datetime_str):
         '符头日期': futou_date.strftime("%Y-%m-%d")
     }
 
+
+"""
+奇门遁甲定局数算法伪代码实现
+核心步骤：
+1. 判断节气与阴阳遁
+2. 定位符头与确定三元
+3. 处理符头与节气关系
+4. 置闰调整规则
+"""
+
+from datetime import datetime
+from typing import Tuple
+
+# ================== 基础工具函数 ==================
+def get_solar_term(date: datetime) -> Tuple[str, bool]:
+    """获取日期所属节气及阴阳遁状态（伪实现）
+    Args:
+        date: 输入日期
+    Returns:
+        (节气名称, 是否阳遁)
+    [[[1]][[3]][[6]]] 阳遁：冬至到夏至，阴遁：夏至到冬至
+    """
+    # 实际应接入节气计算库，此处示例返回立春与阳遁
+    return ("立春", True) if date.month >= 2 else ("冬至", True)
+
+def ganzhi_to_dizhi(ganzhi: str) -> str:
+    """提取干支中的地支（伪实现）"""
+    return ganzhi[1]  # 假设干支格式如"甲子"
+
+def get_previous_jia_ji(date: datetime) -> datetime:
+    """向前追溯最近的甲/己日（符头定位核心算法）
+    [[[37]]] 符头为最近的甲或己日
+    """
+    current = date
+    while True:
+        # 实际需要计算日干支，此处简化逻辑
+        if current.day % 10 in [0, 5]:  # 假设甲日为0，己日为5
+            return current
+        current -= timedelta(days=1)
+
+# ================== 核心算法步骤 ==================
+def determine_ju_number(target_date: datetime) -> dict:
+    # === 步骤1：确定节气与阴阳遁 ===
+    solar_term, is_yang = get_solar_term(target_date)
+    # print(f"当前节气：{solar_term}，遁局类型：{'阳遁' if is_yang else '阴遁'}")
+
+    # === 步骤2：定位符头与三元 ===
+    fu_tou_date = get_previous_jia_ji(target_date)
+    fu_tou_dizhi = ganzhi_to_dizhi("甲子")  # 伪代码需实际计算
+    
+    # 确定三元 [[[75]]]
+    dizhi_groups = {
+        "上元": ["子", "午", "卯", "酉"],
+        "中元": ["寅", "申", "巳", "亥"],
+        "下元": ["辰", "戌", "丑", "未"]
+    }
+    for yuan, dizhis in dizhi_groups.items():
+        if fu_tou_dizhi in dizhis:
+            current_yuan = yuan
+            break
+            
+    # print(f"符头日期：{fu_tou_date}，地支：{fu_tou_dizhi}，归属：{current_yuan}")
+
+    # === 步骤3：处理符头与节气关系 ===
+    term_start_date = datetime(2025, 2, 3)  # 伪代码需接入实际节气开始时间
+    days_diff = (fu_tou_date - term_start_date).days
+    
+    if days_diff == 0:
+        relation = "正授"
+        effective_term = solar_term
+    elif days_diff < 0:
+        relation = "超神"
+        effective_term = get_next_solar_term(solar_term)  # 需实现节气顺序
+    else:
+        relation = "接气" 
+        effective_term = get_prev_solar_term(solar_term)
+    
+    # print(f"节气关系：{relation}，生效节气：{effective_term}")
+
+    # === 步骤4：置闰调整 ===
+    if abs(days_diff) > 9:  # [[[100]]] 超神9天触发置闰
+        if solar_term in ["芒种", "大雪"]:
+            # print("触发置闰，插入闰局...")
+            # 重复前一节气的中/下元 [[[107]]]
+            current_yuan = adjust_yuan(current_yuan)
+
+    # === 局数映射表（示例）===
+    ju_mapping = {
+        "冬至": {"上元": 1, "中元": 7, "下元": 4},
+        "立春": {"上元": 8, "中元": 5, "下元": 2},
+        # 其他节气规则...
+    }
+    
+    return {
+        "节气": effective_term,
+        "遁局": "阳遁" if is_yang else "阴遁",
+        "元": current_yuan,
+        "局数": ju_mapping[effective_term][current_yuan],
+        "关系": relation
+    }
+
+# ================== 辅助函数 ==================
+def adjust_yuan(yuan: str) -> str:
+    """置闰调整规则 [[[107]]]"""
+    return "中元" if yuan == "下元" else "下元"
+
+def get_next_solar_term(term: str) -> str:
+    """获取下一节气（伪实现）"""
+    terms = ["立春","雨水","惊蛰","春分","清明","谷雨",
+             "立夏","小满","芒种","夏至","小暑","大暑",
+             "立秋","处暑","白露","秋分","寒露","霜降",
+             "立冬","小雪","大雪","冬至","小寒","大寒"]
+    idx = terms.index(term)
+    return terms[(idx+1)%24]
+
+def get_prev_solar_term(term: str) -> str:
+    """获取上一节气"""
+    terms = ["立春","雨水","惊蛰","春分","清明","谷雨",
+             "立夏","小满","芒种","夏至","小暑","大暑",
+             "立秋","处暑","白露","秋分","寒露","霜降",
+             "立冬","小雪","大雪","冬至","小寒","大寒"]
+    idx = terms.index(term)
+    return terms[(idx-1)%24]
+
+# 奇门遁甲定局数算法实现
+def get_solar_term_and_yang_status(dt):
+    """
+    获取日期所属节气及阴阳遁状态
+    Args:
+        dt: 输入日期时间
+    Returns:
+        (节气名称, 是否阳遁)
+    阳遁：冬至到夏至，阴遁：夏至到冬至
+    """
+    # 使用已有的节气计算函数
+    dt_utc = dt.replace(tzinfo=timezone.utc)
+    jieqi_time, jieqi_name = find_jieqi(dt_utc)
+    
+    # 判断阴阳遁
+    # 冬至到夏至为阳遁，夏至到冬至为阴遁
+    solar_terms_order = ["冬至", "小寒", "大寒", "立春", "雨水", "惊蛰", 
+                         "春分", "清明", "谷雨", "立夏", "小满", "芒种", 
+                         "夏至", "小暑", "大暑", "立秋", "处暑", "白露", 
+                         "秋分", "寒露", "霜降", "立冬", "小雪", "大雪"]
+    
+    winter_solstice_idx = solar_terms_order.index("冬至")
+    summer_solstice_idx = solar_terms_order.index("夏至")
+    current_idx = solar_terms_order.index(jieqi_name)
+    
+    # 判断是否在冬至到夏至之间
+    if winter_solstice_idx <= current_idx < summer_solstice_idx or \
+       (current_idx < winter_solstice_idx and current_idx < summer_solstice_idx and winter_solstice_idx > summer_solstice_idx):
+        is_yang = True
+    else:
+        is_yang = False
+        
+    return jieqi_name, is_yang
+
+def get_dizhi_from_ganzhi(ganzhi: str) -> str:
+    """提取干支中的地支"""
+    return ganzhi[1]  # 干支格式如"甲子"，第二个字符是地支
+
+def determine_ju_number(datetime_str: str) -> dict:
+    """
+    根据输入日期时间确定奇门遁甲的局数
+    Args:
+        datetime_str: 格式为 "YYYY-MM-DD HH:MM:SS" 的字符串
+    Returns:
+        dict: 包含节气、遁局、三元、局数等信息的字典
+    """
+    # 解析输入时间
+    dt = datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S")
+    
+    # === 步骤1：确定节气与阴阳遁 ===
+    solar_term, is_yang = get_solar_term_and_yang_status(dt)
+    
+    # === 步骤2：定位符头与三元 ===
+    # 使用已有的符头计算函数
+    futou_info = get_futou_details(get_day_houre_ganzhi(datetime_str)[0], method='置闰')
+    fu_tou = futou_info['符头']
+    current_yuan = futou_info['上中下元']
+    
+    # 计算符头对应的日期
+    fu_tou_date = dt.date() - timedelta(days=futou_info['距离天数'])
+    
+    # === 步骤3：处理符头与节气关系 ===
+    # 获取当前节气的开始时间
+    current_term_start = get_jieqi_time(dt.year, 
+                                        [deg for deg, _, name in jieqi_info if name == solar_term][0])
+    current_term_start = current_term_start.replace(tzinfo=None)
+    
+    # 计算符头与节气开始日期的天数差
+    days_diff = (fu_tou_date - current_term_start.date()).days
+    
+    # 确定节气关系和生效节气
+    if days_diff == 0:
+        relation = "正授"
+        effective_term = solar_term
+    elif days_diff < 0:
+        relation = "超神"
+        effective_term = get_next_solar_term(solar_term)
+    else:
+        relation = "接气" 
+        effective_term = get_prev_solar_term(solar_term)
+    
+    # === 步骤4：置闰调整 ===
+    # 超过9天触发置闰条件
+    if abs(days_diff) > 9:
+        if solar_term in ["芒种", "大雪"]:
+            # 重复前一节气的中/下元
+            if current_yuan == "下元":
+                current_yuan = "中元"
+            elif current_yuan == "中元":
+                current_yuan = "下元"
+    
+    # === 局数映射表 ===
+    # 阳遁局数表
+    yang_ju_mapping = {
+        "冬至": {"上元": 1, "中元": 8, "下元": 3},
+        "小寒": {"上元": 3, "中元": 4, "下元": 9},
+        "大寒": {"上元": 9, "中元": 2, "下元": 7},
+        "立春": {"上元": 8, "中元": 5, "下元": 2},
+        "雨水": {"上元": 4, "中元": 9, "下元": 6},
+        "惊蛰": {"上元": 6, "中元": 7, "下元": 2},
+        "春分": {"上元": 2, "中元": 3, "下元": 8},
+        "清明": {"上元": 7, "中元": 6, "下元": 1},
+        "谷雨": {"上元": 9, "中元": 8, "下元": 3},
+        "立夏": {"上元": 3, "中元": 4, "下元": 9},
+        "小满": {"上元": 5, "中元": 2, "下元": 7},
+        "芒种": {"上元": 7, "中元": 6, "下元": 1}
+    }
+    
+    # 阴遁局数表
+    yin_ju_mapping = {
+        "夏至": {"上元": 9, "中元": 2, "下元": 7},
+        "小暑": {"上元": 7, "中元": 6, "下元": 1},
+        "大暑": {"上元": 1, "中元": 8, "下元": 3},
+        "立秋": {"上元": 2, "中元": 5, "下元": 8},
+        "处暑": {"上元": 6, "中元": 1, "下元": 4},
+        "白露": {"上元": 4, "中元": 3, "下元": 8},
+        "秋分": {"上元": 8, "中元": 7, "下元": 2},
+        "寒露": {"上元": 3, "中元": 4, "下元": 9},
+        "霜降": {"上元": 1, "中元": 2, "下元": 7},
+        "立冬": {"上元": 7, "中元": 6, "下元": 1},
+        "小雪": {"上元": 5, "中元": 8, "下元": 3},
+        "大雪": {"上元": 3, "中元": 4, "下元": 9}
+    }
+    
+    # 根据阴阳遁选择对应的局数表
+    ju_mapping = yang_ju_mapping if is_yang else yin_ju_mapping
+    
+    # 获取局数
+    ju_number = ju_mapping.get(effective_term, {}).get(current_yuan, 0)
+    
+    return {
+        "节气": effective_term,
+        "遁局": "阳遁" if is_yang else "阴遁",
+        "元": current_yuan,
+        "局数": ju_number,
+        "关系": relation,
+        "符头": fu_tou,
+        "符头日期": fu_tou_date.strftime("%Y-%m-%d"),
+        "节气开始日期": current_term_start.strftime("%Y-%m-%d"),
+        "天数差": days_diff
+    }
+
+# 扩展calculate_qimen_info函数，加入局数信息
+def calculate_qimen_info_with_ju(datetime_str):
+    """
+    输入日期时间，计算奇门遁甲所需的基本信息，包括局数
+    参数:
+        datetime_str: 格式为 "YYYY-MM-DD HH:MM:SS" 的字符串
+    返回:
+        dict: 包含年月日时干支、节气、符头、局数等信息的字典
+    """
+    # 获取基本信息
+    basic_info = calculate_qimen_info(datetime_str)
+    
+    # 获取局数信息
+    ju_info = determine_ju_number(datetime_str)
+    
+    # 合并信息
+    result = {**basic_info, **ju_info}
+    
+    return result
+
+
 if __name__ == '__main__':
-    test_time = "2025-02-25 15:30:00"
-    result = calculate_qimen_info(test_time)
+    test_time = "2025-02-28 15:30:00"
+    result = calculate_qimen_info_with_ju(test_time)
     for key, value in result.items():
         print(f"{key}: {value}")
 
