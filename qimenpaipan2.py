@@ -3,6 +3,7 @@ from datetime import  datetime, timezone, timedelta
 from skyfield.api import load, Topos
 from skyfield.units import Angle
 import bisect
+from collections import deque
 # 初始化天文数据
 load.directory = './'  # 从当前目录加载星历文件
 ts = load.timescale()
@@ -57,6 +58,51 @@ yin_ju_mapping = {
         "立冬": {"上元": 6, "中元": 5, "下元": 4},
         "小雪": {"上元": 5, "中元": 8, "下元": 3},
         "大雪": {"上元": 4, "中元": 3, "下元": 2}
+}
+qiyi_order = ["戊","己","庚","辛","壬","癸","丁","丙","乙"]  
+# ================== 基础数据定义 ==================
+# 九宫方位映射（洛书数序）
+# ================== 修正后的基础数据 ==================
+PALACE_MAP = {
+    1: ("坎", "北"), 8: ("艮", "东北"), 3: ("震", "东"),
+    4: ("巽", "东南"), 9: ("离", "南"), 2: ("坤", "西南"),
+    7: ("兑", "西"), 6: ("乾", "西北"), 5: ("中", "中央")
+}
+
+# 宫位对应的原始星（中宫天禽的特殊处理）
+POS_STAR_MAP = {
+    1: "天蓬", 2: "天芮", 3: "天冲", 4: "天辅",
+    5: "天禽", 6: "天心", 7: "天柱", 8: "天任", 9: "天英"
+}
+# 六甲旬首对应的宫位
+XUNSHOU_POSITION = {
+    "甲子": 1, "甲戌": 2, "甲申": 8,
+    "甲午": 9, "甲辰": 4, "甲寅": 3
+}
+# 天干地支序号映射（补充到类中）
+TIANGAN_ORDER = {"甲":0, "乙":1, "丙":2, "丁":3, "戊":4, 
+                "己":5, "庚":6, "辛":7, "壬":8, "癸":9}
+DIZHI_ORDER = {"子":0, "丑":1, "寅":2, "卯":3, "辰":4, "巳":5,
+              "午":6, "未":7, "申":8, "酉":9, "戌":10, "亥":11}
+
+# 旬首六仪映射[[14]]
+XUNSHOU_LIUYI = {
+    "甲子": "戊", "甲戌": "己", "甲申": "庚",
+    "甲午": "辛", "甲辰": "壬", "甲寅": "癸"
+}
+# 九星原始宫位映射（依据《奇门遁甲基础》）
+STAR_ORIGIN_POS = {
+    "天蓬": 1, "天芮": 2, "天冲": 3, "天辅": 4, 
+    "天禽": 5, "天心": 6, "天柱": 7, "天任": 8, "天英":9
+}
+STAR_ORIGIN_ARRAY = ["天蓬","天任","天冲","天辅","天英","天芮","天柱","天心"]
+MEN_ORDER = ["休","生","伤","杜","景","死","惊","开"]
+SHEN_ORDER_YANG = ["值符", "腾蛇", "太阴", "六合", "白虎", "玄武", "九地", "九天"]
+SHEN_ORDER_YIN = ["值符", "九天", "九地", "玄武", "白虎", "六合", "太阴", "腾蛇"]
+# 地支与宫位映射（时支对应宫位）
+SHIZHI_POSITION = {
+    "子": 1, "丑": 8, "寅": 8, "卯": 3, "辰": 4, "巳": 4,
+    "午": 9, "未": 2, "申": 2, "酉": 7, "戌": 6, "亥": 6
 }
 # 节气名称到索引的映射
 jieqi_order = {name: idx for idx, (_, _, name) in enumerate(jieqi_info)}
@@ -174,7 +220,6 @@ def get_yue_ganzhi(input_dt):
     
     # 获取对应节气及索引
     jieqi_time, jieqi_name = find_jieqi(input_dt)
-    # print(jieqi_time, jieqi_name)
     idx = jieqi_order[jieqi_name]
     month_num = idx // 2  # 0-11对应正月到腊月
     start_gan = gan_to_start[year_gan]
@@ -240,22 +285,18 @@ def get_solar_longitude(year, month, day, hour=0, minute=0, second=0):
 
 def get_solstices(year: int) -> tuple[datetime, datetime]:
     """获取指定年份的夏至和冬至时间
-    
     Args:
         year: 年份
-    
     Returns:
         tuple[datetime, datetime]: (夏至时间, 冬至时间)
     """
     summer_solstice = None
     winter_solstice = None
-    
     for degree, _, name in jieqi_info:
         if name == '夏至':
             summer_solstice = get_jieqi_time(year, degree)
         elif name == '冬至':
             winter_solstice = get_jieqi_time(year, degree)
-        
         # 如果两个至点都找到了就可以退出循环
         if summer_solstice and winter_solstice:
             break
@@ -319,6 +360,11 @@ class QiMenDunjiaPan:
     def __init__(self, input_datetime_str):
         self.input_dt = datetime.strptime(input_datetime_str, "%Y-%m-%d %H:%M:%S")
         self.input_utc = self.input_dt.replace(tzinfo=timezone.utc)
+        # 初始化九宫数据结构（增加天禽星处理）
+        self.palaces = {num: {
+            'earth': None, 'sky': None, 'door': None, 
+            'star': None, 'shen': None
+        } for num in PALACE_MAP}
     def calculate_ganzhi(self):
         """计算干支"""
         self.year_gz = get_year_ganzhi(self.input_utc)
@@ -438,11 +484,302 @@ class QiMenDunjiaPan:
         else:
             print(f"未找到起始节气：{self.period}")
 
+    def arrange_earth_plate(self):
+        # 正确顺序：六仪(戊己庚辛壬癸) + 三奇(乙丙丁)
+        qiyi_order = ["戊","己","庚","辛","壬","癸","丁","丙","乙"]  
+        
+        # 确定戊的起始宫位（阳遁=局数，阴遁=10-局数）
+        start_pos = self.ju_number 
+        
+        # 生成九宫遍历路径（阳遁顺行，阴遁逆行）
+        positions = []
+        current = start_pos
+        for _ in range(9):
+            positions.append(current)
+            current = current % 9 + 1 if self.is_yang else (current - 2) % 9 + 1
+        
+        # 填充天干（六仪→三奇循环）  
+        for i, pos in enumerate(positions):
+            self.palaces[pos]['earth'] = qiyi_order[i % 6] if i <6 else qiyi_order[6 + (i-6)%3]
+        dipan_tiangan_array = []
+        # 这里是计算外面的那个圈上的地盘天干，一会用它来旋转计算天盘天干
+        for pos in [1,8,3,4,9,2,7,6]:
+            dipan_tiangan_array.append(self.palaces[pos]['earth'])
+        self.dipan_tiangan_array = dipan_tiangan_array
+
+
+    def arrange_sky_plate(self):
+        """天盘和星的排布"""
+        # 根据遁局选择宫位顺序
+        shigan = self.hour_gz[0]
+        positions = [1, 8, 3, 4, 9, 2, 7, 6, 5]
+        # positions = [1, 8, 3, 4, 9, 2, 7, 6, 5] if self.is_yang else [9, 2, 7, 6, 1, 8, 3, 4, 5]
+        # positions = [1, 2,3,4,5,6,7,8,9] if self.is_yang else [9,8,7,6,5,4,3,2,1]
+        # 获取值符星和原始位置
+        zhifu_star = self._get_zhifu_star()
+        original_pos = self._get_star_original_pos(zhifu_star)
+        xunshou_original_pos = self._get_xunshou_original_pos(self.xunshou_ganzhi)
+        xunshou_original_pos = 2 if xunshou_original_pos == 5 else xunshou_original_pos
+        self.xunshou_original_pos = xunshou_original_pos # 下面排八门会用到这个位置， 这个是地盘的宫位
+        print('值符星',zhifu_star, xunshou_original_pos)
+         # 获取时干宫位
+        target_pos = self._get_shigan_position(shigan)
+        print('时干：'+ shigan + ', 宫位:'+ str(target_pos))
+        # 计算旋转步数
+        rotation_steps = positions.index(target_pos) - positions.index(xunshou_original_pos)
+        print('旋转步数' + str(rotation_steps))
+        
+        # 旋转九星和三奇六仪
+        # stars = [self._get_star_by_pos(pos) for pos in positions]
+        stars =  STAR_ORIGIN_ARRAY
+        stars_rotated = deque(stars)
+        stars_rotated.rotate(rotation_steps)
+        # stars_rotated.remove(stars[-1])
+        
+        # qiyi = [self.palaces[pos]['earth'] for pos in positions]
+        qiyi =  self.dipan_tiangan_array 
+        qiyi_rotated = deque(qiyi)
+        qiyi_rotated.rotate(rotation_steps)
+        # qiyi_rotated.remove(qiyi[-1])
+
+        # 写入天盘数据
+        for i, pos in enumerate(positions[:-1]):
+            self.palaces[pos]['sky'] = qiyi_rotated[i]
+            self.palaces[pos]['star'] = stars_rotated[i]
+        self.palaces[5]['sky'] = self.palaces[5]['earth']
+        self.palaces[5]['star'] = '天禽'
+
+    def arrange_doors(self):
+        """八门排布"""
+        positions = [1, 8, 3, 4, 9, 2, 7, 6, 5]
+        # positions_yin = [9, 2, 7, 6, 1, 8, 3, 4, 5]
+        # 根据时支计算直使门起始宫（需补充时支到宫位的映射）
+        # shizhi_pos = self._get_shizhi_position(self.day_gz)  # 例如：子时对应坎1宫
+         # 获取时干宫位
+        # shizhi_pos = self._get_shigan_position(self.day_gz) 
+        # xunshou_original_pos = self._get_xunshou_original_pos(self.xunshou_ganzhi)
+        # 生成完整的六十甲子时辰列表
+        sixty_jiazi = []
+        for i in range(60):
+            g = tiangan[i % 10]
+            z = dizhi[i % 12]
+            sixty_jiazi.append(g + z)
+        xunshou_index = sixty_jiazi.index(self.xunshou_ganzhi)
+        current_index = sixty_jiazi.index(self.hour_gz)
+        xunshou_diff = current_index - xunshou_index
+        print('====================================')
+        print('距离旬首过去了：', xunshou_diff)
+        # print('旬首干支在第：',self.xunshou_ganzhi,  XUNSHOU_POSITION[self.xunshou_ganzhi],'宫')
+        print('旬首干支在第：',self.xunshou_ganzhi,  XUNSHOU_LIUYI[self.xunshou_ganzhi], self._find_earth_pos(XUNSHOU_LIUYI[self.xunshou_ganzhi]),'宫')
+        print('====================================')
+        # 值使门的原始宫位加上移动的次数
+        xunshou_ganzhi_earth_pos = self._find_earth_pos(XUNSHOU_LIUYI[self.xunshou_ganzhi])
+        if self.is_yang:
+            self.zhishi_pos = 9 if  (xunshou_ganzhi_earth_pos  + xunshou_diff) % 9 == 0 else (xunshou_ganzhi_earth_pos  + xunshou_diff) % 9 
+        else:
+            self.zhishi_pos = 9 if  (xunshou_ganzhi_earth_pos  - xunshou_diff + 9) % 9 == 0 else (xunshou_ganzhi_earth_pos  - xunshou_diff + 9) % 9 
+        print(self.zhishi_pos)
+        # 这一条我不确定？如果值使门落5是不是寄2 
+        self.zhishi_pos = 2 if self.zhishi_pos == 5 else self.zhishi_pos 
+        print('值使门的新宫位：', self.zhishi_pos)
+
+        xunshou_pos =  XUNSHOU_POSITION[self.xunshou_ganzhi]
+        xunshou_orgin_index = positions.index(xunshou_pos)
+
+        # self.xunshou_original_pos 这个其实是 值使门 原始宫位的 index?
+        men_pos =  5 if self.xunshou_original_pos == 5 else positions.index(self.xunshou_original_pos)
+        print(positions[self.xunshou_original_pos],men_pos)
+        print('值使门',self.xunshou_original_pos, MEN_ORDER[men_pos])
+
+        # 用新宫位的index 减去 旧宫位的indx
+        men_pos_diff = positions.index(self.zhishi_pos) - positions.index(self.xunshou_original_pos)
+        # men_pos_diff = men_pos_diff + xunshou_diff  if self.is_yang  else  men_pos_diff + xunshou_diff + 1
+
+        self.zhishi_men = MEN_ORDER[men_pos]
+        men_order = deque(MEN_ORDER)
+        # 旋转的次数
+        # rotation_steps = (dizhi.index(self.hour_gz[1]) + 1) % 8
+        rotation_steps = men_pos_diff
+        men_order.rotate(rotation_steps)
+        # 排除中宫后的八宫顺序（按阳遁顺/阴遁逆）
+        positions = positions[:-1]
+        for pos, men in zip(positions, men_order):
+            self.palaces[pos]['door'] = men
+    
+    def arrange_shen(self):
+        """八神排布"""
+        shen_order = SHEN_ORDER_YANG if self.is_yang else SHEN_ORDER_YIN
+        # 获取值符所在宫位
+        zhifu_pos = self._get_zhifu_position()  # 需补充值符宫位获取逻辑
+        # 按阴阳遁确定排列方向
+        positions = self._get_shen_positions(zhifu_pos)
+        for pos, shen in zip(positions, shen_order):
+            self.palaces[pos]['shen'] = shen
+
+    
+    
+    def _get_zhifu_star(self) -> str:
+        """根据时干支确定旬首，返回值符星（需先调用_calculate_xunshou）"""
+        xunshou_ganzhi = self._calculate_xunshou()  # 例如"甲申"
+        self.xunshou_ganzhi = xunshou_ganzhi
+        # 这里通过旬首干支计算 旬首对应的地盘天干
+        xunshou_liuyi_dipan_tiangan = XUNSHOU_LIUYI[xunshou_ganzhi]
+        # 根据地盘天干 找到旬首对应的地盘宫位
+        # 使用示例：
+        pos = self._find_earth_pos(xunshou_liuyi_dipan_tiangan)
+        # 处理中宫情况：当旬首导致值符居中时，天禽随天芮
+        if pos == 5:
+            return "天禽"
+        return POS_STAR_MAP.get(pos, "天芮")
+
+    def _find_earth_pos(self, target_gan: str) -> int:
+        """找到地盘天干对应的宫位
+        Args:
+            target_gan: 目标天干，如 "戊"
+        
+        Returns:
+            int: 对应的宫位号
+        """
+        for pos, data in self.palaces.items():
+            if data['earth'] == target_gan:
+                return pos
+        return 5  # 如果找不到，返回中宫
+
+    
+    
+    def _calculate_xunshou(self) -> str:
+        """修正后的旬首计算（兼容天干地支0/1起始编号）"""
+        # 假设天干地支序号从0开始（甲=0，子=0）
+        gan, zhi = self.hour_gz[0], self.hour_gz[1]
+        gan_idx = TIANGAN_ORDER[gan]  # "庚"→6
+        zhi_idx = DIZHI_ORDER[zhi]    # "申"→8
+        
+        delta = (zhi_idx - gan_idx) % 12  # (8-6)=2 → 甲寅
+        
+        # Δ值与旬首映射[[3]]
+        xunshou_map = {
+            0: "甲子", 10: "甲戌", 8: "甲申", 
+            6: "甲午", 4: "甲辰", 2: "甲寅"
+        }
+        print(self.hour_gz + '时旬首:'+xunshou_map[delta])
+        return xunshou_map[delta]
+    
+    def _get_xunshou_original_pos(self, xunshou):
+        """获取旬首的原始位置""" 
+        xunshou_liuyi  = XUNSHOU_LIUYI[xunshou]
+        # 遍历宫位字典，找到earth值等于时干的宫位号
+        for palace_num, palace_data in self.palaces.items():
+            if palace_data['earth'] == xunshou_liuyi:
+                return palace_num
+        # 如果找不到，返回中宫（5）
+        return 5
+
+    
+    def _get_star_original_pos(self, star_name: str) -> int:
+        """根据九星名称返回原始宫位（处理天禽寄宫）"""
+        pos = STAR_ORIGIN_POS.get(star_name, 5)
+        
+        # 天禽星特殊处理：阳遁寄艮8，阴遁寄坤2
+        if star_name == "天禽":
+            return 8 if self.is_yang else 2
+        return pos
+    
+    def _get_shigan_position(self, shigan: str) -> int:
+        """根据时干在宫位字典中查找对应的宫位
+        Args:
+            shigan: 时干，如 '甲'
+        Returns:
+            int: 对应的宫位号
+        """
+        # 遍历宫位字典，找到earth值等于时干的宫位号
+        for palace_num, palace_data in self.palaces.items():
+            if palace_data['earth'] == shigan:
+                return palace_num
+        # 如果找不到，返回中宫（5）
+        return 5
+    
+    def _get_star_by_pos(self, pos: int) -> str:
+        """根据宫位获取原始星（考虑中宫寄位）"""
+        star = POS_STAR_MAP.get(pos, "天禽")
+        
+        # 中宫天禽的寄宫处理
+        if pos == 5:
+            star = "天禽" 
+        return star
+    
+    def _get_zhifu_position(self) -> int:
+        """获取当前值符所在宫位（旬首时干对应宫位）"""
+        # 需先计算旬首（此处需补充旬首计算逻辑）
+        xunshou = self._calculate_xunshou()  
+        
+        # 遍历九宫寻找旬首时干的宫位
+        for pos in self.palaces:
+            if self.palaces[pos]['earth'] == xunshou:
+                return pos
+        return 5  # 默认中宫
+
+    def _get_shen_positions(self, zhifu_pos: int) -> list:
+        """生成八神排列的宫位顺序（严格分阴阳遁）"""
+        # 根据阴阳遁选择基础路径
+        if self.is_yang:
+            base_order = [1, 8, 3, 4, 9, 2, 7, 6, 5]  # 阳遁顺飞九宫
+        else:
+            base_order = [9, 2, 7, 6, 1, 8, 3, 4, 5]  # 阴遁逆飞九宫
+        
+        # 找到值符起始位置索引
+        try:
+            start_idx = base_order.index(zhifu_pos)
+        except ValueError:
+            start_idx = 0  # 异常处理
+        
+        # 生成循环队列并旋转
+        q = deque(base_order)
+        q.rotate(-start_idx)
+        
+        # 排除中宫后的八宫
+        return [pos for pos in list(q) if pos != 5][:8]
+
+    def _get_shizhi_position(self, shizhi: str) -> int:
+        """将时支转换为对应的九宫位置（地支三合局原理）"""
+        return SHIZHI_POSITION.get(shizhi, 5)  # 默认返回中宫
+    
+    def _get_zhishi_men(self) -> str:
+        """获取直使门（需结合旬首宫位和阴阳遁）"""
+        # 1. 获取旬首对应的六仪
+        xunshou_liuyi = self._calculate_xunshou()
+        
+        # 2. 查找六仪在地盘的宫位
+        palace_pos = next((pos for pos in self.palaces 
+                        if self.palaces[pos]['earth'] == xunshou_liuyi), 5)
+        
+        # 3. 处理中宫寄宫
+        if palace_pos == 5:
+            palace_pos = 8 if self.is_yang else 2
+        
+        # 4. 宫位到八门的映射（按阳遁宫位顺序）
+        pos_to_men = {
+            1: "休",   # 坎1宫
+            8: "生",   # 艮8宫
+            3: "伤",   # 震3宫
+            4: "杜",   # 巽4宫
+            9: "景",   # 离9宫
+            2: "死",   # 坤2宫
+            7: "惊",   # 兑7宫
+            6: "开"    # 乾6宫
+        }
+        
+        return pos_to_men[palace_pos]
+
 
     def run(self):
         self.calculate_ganzhi()
         self.calculate_futou()
         self.get_futou_jieqi()
+        self.arrange_earth_plate()
+        self.arrange_sky_plate()
+        self.arrange_doors()
+        self.arrange_shen()
+        print(self.palaces)
 
 
 
@@ -453,7 +790,9 @@ class QiMenDunjiaPan:
 # print(f"{year}年冬至：{winter_dt}")
 
 if __name__ == '__main__':
-    # datetime_str = "2024-11-19 01:30:00" #f8
-    datetime_str = "2025-02-28 01:30:00" #t9
+    datetime_str = "2024-11-19 20:00:00" #f8
+    # datetime_str = "2025-02-28 18:30:00" #t9
+    # datetime_str = "2024-06-07 16:30:00" #t9
+    # datetime_str = "2025-03-13 4:00:00" #t9
     qimen = QiMenDunjiaPan(datetime_str)
     qimen.run()
