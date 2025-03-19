@@ -608,12 +608,19 @@ class QiMenDunjiaPan:
     
     def arrange_shen(self):
         """八神排布"""
+        positions = [1, 8, 3, 4, 9, 2, 7, 6]
         shen_order = SHEN_ORDER_YANG if self.is_yang else SHEN_ORDER_YIN
-        # 获取值符所在宫位
-        zhifu_pos = self._get_zhifu_position()  # 需补充值符宫位获取逻辑
+        # 获取时干所在宫位，即为八神值符所在宫位
+        shigan_pos = 2 if  self._find_earth_pos(self.hour_gz[0]) == 5  else self._find_earth_pos(self.hour_gz[0])
+        shigan_pos_index = positions.index(shigan_pos)
+        zhifu_pos_diff = shigan_pos_index
+        shen_order_deque = deque(shen_order)
+        shen_order_deque.rotate(zhifu_pos_diff)
+
+        # zhifu_pos = self._get_zhifu_position()  # 需补充值符宫位获取逻辑
         # 按阴阳遁确定排列方向
-        positions = self._get_shen_positions(zhifu_pos)
-        for pos, shen in zip(positions, shen_order):
+        # positions = self._get_shen_positions(zhifu_pos)
+        for pos, shen in zip(positions, shen_order_deque):
             self.palaces[pos]['shen'] = shen
 
     
@@ -790,9 +797,9 @@ class QiMenDunjiaPan:
 # print(f"{year}年冬至：{winter_dt}")
 
 if __name__ == '__main__':
-    datetime_str = "2024-11-19 20:00:00" #f8
+    # datetime_str = "2024-11-19 20:00:00" #f8
     # datetime_str = "2025-02-28 18:30:00" #t9
-    # datetime_str = "2024-06-07 16:30:00" #t9
+    datetime_str = "2024-06-07 16:30:00" #t9
     # datetime_str = "2025-03-13 4:00:00" #t9
     qimen = QiMenDunjiaPan(datetime_str)
     qimen.run()
