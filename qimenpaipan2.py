@@ -62,7 +62,6 @@ yin_ju_mapping = {
 qiyi_order = ["戊","己","庚","辛","壬","癸","丁","丙","乙"]  
 # ================== 基础数据定义 ==================
 # 九宫方位映射（洛书数序）
-# ================== 修正后的基础数据 ==================
 PALACE_MAP = {
     1: ("坎", "北"), 8: ("艮", "东北"), 3: ("震", "东"),
     4: ("巽", "东南"), 9: ("离", "南"), 2: ("坤", "西南"),
@@ -80,10 +79,8 @@ XUNSHOU_POSITION = {
     "甲午": 9, "甲辰": 4, "甲寅": 3
 }
 # 天干地支序号映射（补充到类中）
-TIANGAN_ORDER = {"甲":0, "乙":1, "丙":2, "丁":3, "戊":4, 
-                "己":5, "庚":6, "辛":7, "壬":8, "癸":9}
-DIZHI_ORDER = {"子":0, "丑":1, "寅":2, "卯":3, "辰":4, "巳":5,
-              "午":6, "未":7, "申":8, "酉":9, "戌":10, "亥":11}
+TIANGAN_ORDER = {gan: idx for idx, gan in enumerate(tiangan)}
+DIZHI_ORDER = {zhi: idx for idx, zhi in enumerate(dizhi)}
 
 # 旬首六仪映射[[14]]
 XUNSHOU_LIUYI = {
@@ -360,7 +357,6 @@ class QiMenDunjiaPan:
     def __init__(self, input_datetime_str):
         self.input_dt = datetime.strptime(input_datetime_str, "%Y-%m-%d %H:%M:%S")
         self.input_utc = self.input_dt.replace(tzinfo=timezone.utc)
-        # 初始化九宫数据结构（增加天禽星处理）
         self.palaces = {num: {
             'earth': None, 'sky': None, 'door': None, 
             'star': None, 'shen': None
@@ -513,8 +509,6 @@ class QiMenDunjiaPan:
         # 根据遁局选择宫位顺序
         shigan = self.hour_gz[0]
         positions = [1, 8, 3, 4, 9, 2, 7, 6, 5]
-        # positions = [1, 8, 3, 4, 9, 2, 7, 6, 5] if self.is_yang else [9, 2, 7, 6, 1, 8, 3, 4, 5]
-        # positions = [1, 2,3,4,5,6,7,8,9] if self.is_yang else [9,8,7,6,5,4,3,2,1]
         # 获取值符星和原始位置
         zhifu_star = self._get_zhifu_star()
         original_pos = self._get_star_original_pos(zhifu_star)
@@ -530,17 +524,13 @@ class QiMenDunjiaPan:
         print('旋转步数' + str(rotation_steps))
         
         # 旋转九星和三奇六仪
-        # stars = [self._get_star_by_pos(pos) for pos in positions]
         stars =  STAR_ORIGIN_ARRAY
         stars_rotated = deque(stars)
         stars_rotated.rotate(rotation_steps)
-        # stars_rotated.remove(stars[-1])
         
-        # qiyi = [self.palaces[pos]['earth'] for pos in positions]
         qiyi =  self.dipan_tiangan_array 
         qiyi_rotated = deque(qiyi)
         qiyi_rotated.rotate(rotation_steps)
-        # qiyi_rotated.remove(qiyi[-1])
 
         # 写入天盘数据
         for i, pos in enumerate(positions[:-1]):
@@ -552,12 +542,6 @@ class QiMenDunjiaPan:
     def arrange_doors(self):
         """八门排布"""
         positions = [1, 8, 3, 4, 9, 2, 7, 6, 5]
-        # positions_yin = [9, 2, 7, 6, 1, 8, 3, 4, 5]
-        # 根据时支计算直使门起始宫（需补充时支到宫位的映射）
-        # shizhi_pos = self._get_shizhi_position(self.day_gz)  # 例如：子时对应坎1宫
-         # 获取时干宫位
-        # shizhi_pos = self._get_shigan_position(self.day_gz) 
-        # xunshou_original_pos = self._get_xunshou_original_pos(self.xunshou_ganzhi)
         # 生成完整的六十甲子时辰列表
         sixty_jiazi = []
         for i in range(60):
@@ -569,7 +553,6 @@ class QiMenDunjiaPan:
         xunshou_diff = current_index - xunshou_index
         print('====================================')
         print('距离旬首过去了：', xunshou_diff)
-        # print('旬首干支在第：',self.xunshou_ganzhi,  XUNSHOU_POSITION[self.xunshou_ganzhi],'宫')
         print('旬首干支在第：',self.xunshou_ganzhi,  XUNSHOU_LIUYI[self.xunshou_ganzhi], self._find_earth_pos(XUNSHOU_LIUYI[self.xunshou_ganzhi]),'宫')
         print('====================================')
         # 值使门的原始宫位加上移动的次数
@@ -579,7 +562,6 @@ class QiMenDunjiaPan:
         else:
             self.zhishi_pos = 9 if  (xunshou_ganzhi_earth_pos  - xunshou_diff + 9) % 9 == 0 else (xunshou_ganzhi_earth_pos  - xunshou_diff + 9) % 9 
         print(self.zhishi_pos)
-        # 这一条我不确定？如果值使门落5是不是寄2 
         self.zhishi_pos = 2 if self.zhishi_pos == 5 else self.zhishi_pos 
         print('值使门的新宫位：', self.zhishi_pos)
 
@@ -593,12 +575,10 @@ class QiMenDunjiaPan:
 
         # 用新宫位的index 减去 旧宫位的indx
         men_pos_diff = positions.index(self.zhishi_pos) - positions.index(self.xunshou_original_pos)
-        # men_pos_diff = men_pos_diff + xunshou_diff  if self.is_yang  else  men_pos_diff + xunshou_diff + 1
 
         self.zhishi_men = MEN_ORDER[men_pos]
         men_order = deque(MEN_ORDER)
         # 旋转的次数
-        # rotation_steps = (dizhi.index(self.hour_gz[1]) + 1) % 8
         rotation_steps = men_pos_diff
         men_order.rotate(rotation_steps)
         # 排除中宫后的八宫顺序（按阳遁顺/阴遁逆）
@@ -616,10 +596,7 @@ class QiMenDunjiaPan:
         zhifu_pos_diff = shigan_pos_index
         shen_order_deque = deque(shen_order)
         shen_order_deque.rotate(zhifu_pos_diff)
-
-        # zhifu_pos = self._get_zhifu_position()  # 需补充值符宫位获取逻辑
         # 按阴阳遁确定排列方向
-        # positions = self._get_shen_positions(zhifu_pos)
         for pos, shen in zip(positions, shen_order_deque):
             self.palaces[pos]['shen'] = shen
     
