@@ -622,7 +622,24 @@ class QiMenDunjiaPan:
         # positions = self._get_shen_positions(zhifu_pos)
         for pos, shen in zip(positions, shen_order_deque):
             self.palaces[pos]['shen'] = shen
+    
+    def find_horse_start():
+        """找出马星所在"""
+        print("马星所在")
+    
+    def find_kongwang():
+        """找出空亡空位"""
+        print("找出空亡空位")
 
+    def find_liuyi_jixing():
+        """找出六仪击刑"""
+    
+    def find_rumu():
+        """找出天干入墓"""
+
+    def find_menpo():
+        """找出门迫"""
+    
     
     
     def _get_zhifu_star(self) -> str:
