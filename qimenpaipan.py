@@ -570,7 +570,7 @@ class QiMenDunjiaPan:
 
         # self.xunshou_original_pos 这个其实是 值使门 原始宫位的 index?
         men_pos =  5 if self.xunshou_original_pos == 5 else positions.index(self.xunshou_original_pos)
-        print(positions[self.xunshou_original_pos],men_pos)
+        # print(positions[self.xunshou_original_pos],men_pos)
         print('值使门',self.xunshou_original_pos, MEN_ORDER[men_pos])
 
         # 用新宫位的index 减去 旧宫位的indx
@@ -793,7 +793,8 @@ class QiMenDunjiaPan:
 if __name__ == '__main__':
     # datetime_str = "2024-11-19 20:00:00" #f8
     # datetime_str = "2025-02-28 18:30:00" #t9
-    datetime_str = "2024-06-07 16:30:00" #t9
+    # datetime_str = "2024-06-07 16:30:00" #t9
     # datetime_str = "2025-03-13 4:00:00" #t9
+    datetime_str = "2025-04-14 22:47:01" #t9
     qimen = QiMenDunjiaPan(datetime_str)
     qimen.run()
