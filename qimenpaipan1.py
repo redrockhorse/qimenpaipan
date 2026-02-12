@@ -1,422 +1,625 @@
-# 优化后的奇门遁甲排盘代码结构（核心流程示例）
+"""
+奇门遁甲排盘系统 - 精简重构版（保持原逻辑口径）
+
+功能：
+1) 天文：立春/节气（太阳黄经二分）
+2) 干支：年/月（立春/节气界）、日/时（基准甲子日、23点换日）
+3) 置闰符头：符头/三元/符头差日/第几天
+4) 置闰定局：阴阳遁、局数
+5) 排盘：地盘(三奇六仪)、天盘、九星、八门、八神
+
+注意：
+- 仍使用你原代码的“置闰触发条件 futou_diff > 9 → period 冬至->大雪、夏至->芒种”的口径
+- 仍使用“中宫寄坤(2宫)”的口径
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from typing import Dict, List, Tuple, Optional
+from collections import deque
+import logging
+
 from skyfield.api import load
-from datetime import  datetime, timezone, timedelta, time
 
-# 初始化天文数据
-load.directory = './'
-ts = load.timescale()
-eph = load('de421.bsp')
+# -----------------------------------------------------------------------------
+# logging
+# -----------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# 辅助函数省略，见原代码实现
-# 节气名称与黄经度数、月份的对应关系
-tiangan = ['甲','乙','丙','丁','戊','己','庚','辛','壬','癸']
-dizhi = ['子','丑','寅','卯','辰','巳','午','未','申','酉','戌','亥']
-gan = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
-zhi = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 
-jieqi_info = [
-    (315, 2, '立春'), (330, 2, '雨水'), (345, 3, '惊蛰'), (0, 3, '春分'),
-    (15, 4, '清明'), (30, 4, '谷雨'), (45, 5, '立夏'), (60, 5, '小满'),
-    (75, 6, '芒种'), (90, 6, '夏至'), (105, 7, '小暑'), (120, 7, '大暑'),
-    (135, 8, '立秋'), (150, 8, '处暑'), (165, 9, '白露'), (180, 9, '秋分'),
-    (195, 10, '寒露'), (210, 10, '霜降'), (225, 11, '立冬'), (240, 11, '小雪'),
-    (255, 12, '大雪'), (270, 12, '冬至'), (285, 1, '小寒'), (300, 1, '大寒')
-]
+# -----------------------------------------------------------------------------
+# 常量与工具
+# -----------------------------------------------------------------------------
+@dataclass(frozen=True)
+class AstronomyConfig:
+    EPHEMERIS_FILE: str = "de421.bsp"
+    EPHEMERIS_DIR: str = "./"
+    LICHUN_DEGREE: float = 315.0
+    BINARY_SEARCH_ITERATIONS: int = 20
 
-# 年干对应正月天干规则
-gan_to_start = {
-    '甲': '丙', '己': '丙',
-    '乙': '戊', '庚': '戊',
-    '丙': '庚', '辛': '庚',
-    '丁': '壬', '壬': '壬',
-    '戊': '甲', '癸': '甲'
-}
-# 阳遁局数表
-yang_ju_mapping = {
-        "冬至": {"上元": 1, "中元": 7, "下元": 4},
-        "小寒": {"上元": 2, "中元": 8, "下元": 5},
-        "大寒": {"上元": 3, "中元": 9, "下元": 6},
-        "立春": {"上元": 8, "中元": 5, "下元": 2},
-        "雨水": {"上元": 9, "中元": 6, "下元": 3},
-        "惊蛰": {"上元": 1, "中元": 7, "下元": 4},
-        "春分": {"上元": 3, "中元": 9, "下元": 6},
-        "清明": {"上元": 4, "中元": 1, "下元": 7},
-        "谷雨": {"上元": 5, "中元": 2, "下元": 8},
-        "立夏": {"上元": 4, "中元": 1, "下元": 7},
-        "小满": {"上元": 5, "中元": 2, "下元": 8},
-        "芒种": {"上元": 6, "中元": 3, "下元": 9}
+
+class Ganzhi:
+    TIANGAN = ["甲","乙","丙","丁","戊","己","庚","辛","壬","癸"]
+    DIZHI  = ["子","丑","寅","卯","辰","巳","午","未","申","酉","戌","亥"]
+
+    TIANGAN_ORDER = {g:i for i,g in enumerate(TIANGAN)}
+    DIZHI_ORDER   = {z:i for i,z in enumerate(DIZHI)}
+
+    # 五虎遁月：年干 -> 正月天干
+    YEAR_GAN_TO_MONTH_START = {
+        "甲":"丙","己":"丙",
+        "乙":"戊","庚":"戊",
+        "丙":"庚","辛":"庚",
+        "丁":"壬","壬":"壬",
+        "戊":"甲","癸":"甲",
     }
-    
-# 阴遁局数表
-yin_ju_mapping = {
-        "夏至": {"上元": 9, "中元": 3, "下元": 6},
-        "小暑": {"上元": 8, "中元": 2, "下元": 5},
-        "大暑": {"上元": 7, "中元": 1, "下元": 4},
-        "立秋": {"上元": 2, "中元": 5, "下元": 8},
-        "处暑": {"上元": 1, "中元": 4, "下元": 7},
-        "白露": {"上元": 9, "中元": 3, "下元": 6},
-        "秋分": {"上元": 7, "中元": 6, "下元": 5},
-        "寒露": {"上元": 6, "中元": 5, "下元": 4},
-        "霜降": {"上元": 5, "中元": 4, "下元": 3},
-        "立冬": {"上元": 6, "中元": 5, "下元": 4},
-        "小雪": {"上元": 5, "中元": 8, "下元": 3},
-        "大雪": {"上元": 4, "中元": 3, "下元": 2}
-}
 
-PALACE_MAP = {
-    1: ("坎", "北"), 8: ("艮", "东北"), 3: ("震", "东"),
-    4: ("巽", "东南"), 9: ("离", "南"), 2: ("坤", "西南"),
-    7: ("兑", "西"), 6: ("乾", "西北"), 5: ("中", "中央")
-}
-# 节气名称到索引的映射
-jieqi_order = {name: idx for idx, (_, _, name) in enumerate(jieqi_info)}
-# 获取输入年份的立春准确时间
-def find_lichun(year):
-    # 设置搜索范围（2月前后）
-    start = ts.utc(year, 2, 1)
-    end = ts.utc(year, 2, 15)
-    
-    # 定义黄经检测函数
-    def sun_longitude(t):
-        astro = eph['earth'].at(t).observe(eph['sun'])
-        lat, lon, _ = astro.ecliptic_latlon()
-        return lon.degrees
-    # 二分法查找黄经315度的时刻
-    t0, t1 = start, end
-    for _ in range(20):  # 迭代20次达微秒精度
-        tm = ts.tt_jd((t0.tt + t1.tt) / 2)
-        if sun_longitude(tm) >= 315:
-            t1 = tm
-        else:
-            t0 = tm
-    return t1.utc_datetime()
+    # 基准：2025-02-24 甲子日（你原代码口径）
+    BASE_DATE = datetime(2025, 2, 24).date()
+    BASE_YEAR = 4  # 公元4年甲子年（你原代码口径）
 
-# 获取年干支
-def get_year_ganzhi(input_datetime):
-    year = input_datetime.year
-    # 获取当前年和前一年的立春时间
-    lichun_current = find_lichun(year)
-    # 判断输入日期是否在当前年立春之后
-    if input_datetime >= lichun_current:
-        calc_year = year
-    else:
-        calc_year = year - 1
-    # 天干地支表
-    idx = (calc_year - 4) % 60
-    return tiangan[idx % 10] + dizhi[idx % 12]
-
-# 根据输入的时间找到对应的节气
-def find_jieqi(input_dt, forward: bool = True):
-    """ 找到输入时间对应的节气及索引
-    Args:
-        input_dt: 输入时间
-        forward: True表示向前找(找小于等于输入时间的最近节气)，
-                False表示向后找(找大于输入时间的最近节气)
-    Returns:
-        (节气时间, 节气名称)
-    """
-    # 生成前后两年所有节气时间
-    jieqi_events = []
-    for y in [input_dt.year - 1, input_dt.year]:
-        for degree, _, name in jieqi_info:
-            jt = get_jieqi_time(y, degree)
-            jieqi_events.append((jt, name))
-    
-    # 按时间排序
-    jieqi_events.sort(key=lambda x: x[0])
-    
-    if forward:
-        # 向前找：找到最后一个小于等于输入时间的节气
-        for i in range(len(jieqi_events)-1, -1, -1):
-            if jieqi_events[i][0] <= input_dt:
-                return jieqi_events[i]
-    else:
-        # 向后找：找到第一个大于输入时间的节气
-        for event in jieqi_events:
-            if event[0] > input_dt:
-                return event
-                
-    return None
-
-def get_jieqi_time(year, target_degree):
-    """ 计算指定年份特定黄经度数对应的节气时间 """
-    # 根据黄经度数确定对应的月份
-    for degree, month, _ in jieqi_info:
-        if degree == target_degree:
-            break
-    
-    # 修正月份范围设置
-    start_year = year
-    start_month = month - 1
-    if start_month < 1:
-        start_month = 12
-        start_year -= 1
-    
-    end_year = year
-    end_month = month + 1
-    if end_month > 12:
-        end_month = 1
-        end_year += 1
-    
-    # 创建时间范围（前后各扩展一个月）
-    start = ts.utc(start_year, start_month, 1)
-    end = ts.utc(end_year, end_month, 1)
-
-    # 二分法查找
-    def sun_longitude(t):
-        astro = eph['earth'].at(t).observe(eph['sun'])
-        return astro.ecliptic_latlon()[1].degrees % 360
-
-    t0, t1 = start, end
-    for _ in range(20):
-        tm = ts.tt_jd((t0.tt + t1.tt) / 2)
-        if sun_longitude(tm) >= target_degree % 360:
-            t1 = tm
-        else:
-            t0 = tm
-    return t1.utc_datetime()
-
-# 获取月干支
-def get_yue_ganzhi(input_dt):
-    """ 计算月干支 """
-    # 获取年干
-    year_gan = get_year_ganzhi(input_dt)[0]
-    
-    # 获取对应节气及索引
-    jieqi_time, jieqi_name = find_jieqi(input_dt)
-    # print(jieqi_time, jieqi_name)
-    idx = jieqi_order[jieqi_name]
-    month_num = idx // 2  # 0-11对应正月到腊月
-    start_gan = gan_to_start[year_gan]
-    gan_idx = (tiangan.index(start_gan) + month_num) % 10
-    zhi_idx = (month_num + 2) % 12  # 正月寅=2
-    
-    return tiangan[gan_idx] + dizhi[zhi_idx]
-
-# 获取日时干支
-def get_day_houre_ganzhi(input_str):
-    # 解析输入时间 [[5]]
-    dt = datetime.strptime(input_str, "%Y-%m-%d %H:%M:%S")
-    
-    # 调整日期：23点后算下一天 [[1]]
-    if dt.hour >= 23:
-        adjusted_date = dt.date() + timedelta(days=1)
-    else:
-        adjusted_date = dt.date()
-    
-    # ------------ 日干支计算 ------------
-    # 基准日需按实际情况调整！示例基准：2025-02-24为甲子日
-    base_date = datetime(2025, 2, 24).date()
-    days_diff = (adjusted_date - base_date).days
-    ganzhi_index = days_diff % 60  # 干支60一轮回
-    
-    ri_gan = gan[ganzhi_index % 10]
-    ri_zhi = zhi[ganzhi_index % 12]
-    ri_gz = f"{ri_gan}{ri_zhi}"
-    
-    # ------------ 时干支计算 ------------
-    h = dt.hour
-    # 确定时支（23点属于次日子时）
-    if h == 23:
-        h = 24  # 便于计算时辰索引
-    zhi_index = (h + 1) // 2 % 12  # 时支索引 [[3]]
-    shi_zhi = zhi[zhi_index]
-    
-    # 根据日干确定时干起始（甲己日甲子，乙庚日丙子...）
-    ri_gan_idx = gan.index(ri_gan)
-    if ri_gan_idx in [0, 5]:   start = 0  # 甲/己
-    elif ri_gan_idx in [1,6]:  start = 2  # 乙/庚→丙
-    elif ri_gan_idx in [2,7]:  start = 4  # 丙/辛→戊
-    elif ri_gan_idx in [3,8]:  start = 6  # 丁/壬→庚
-    else:                      start = 8  # 戊/癸→壬
-    
-    shi_gan = gan[(start + zhi_index) % 10]
-    shi_gz = f"{shi_gan}{shi_zhi}"
-    
-    return ri_gz, shi_gz
-
-def get_solar_longitude(year, month, day, hour=0, minute=0, second=0):
-    """根据输入时间获取太阳黄经度数"""
-    # 创建时间对象
-    t = ts.utc(year, month, day, hour, minute, second)
-    # 获取天体位置
-    sun = eph['sun']
-    earth = eph['earth']
-    astrometric = earth.at(t).observe(sun)
-    # 转换黄道坐标系
-    lat, lon, _ = astrometric.ecliptic_latlon(t)
-    return lon.degrees
+    # 60甲子与索引（只生成一次）
+    # 注意：需要在类定义后生成，因为列表推导式的作用域问题
+    JIAZI: List[str] = None  # type: ignore
+    JIAZI_INDEX: Dict[str, int] = None  # type: ignore
 
 
-def get_futou_details(day_ganzhi, method='置闰'):
-    """
-    根据日干支和定局方法计算符头、三元及距离天数
-    :param day_ganzhi: 日干支，如"甲子"
-    :param method: 定局方法，"置闰" 或 "拆补"
-    :return: 字典包含符头、三元、距离天数
-    """
-    # 生成干支表（60甲子）
-    
-    ganzhi = [f"{gan[i%10]}{zhi[i%12]}" for i in range(60)]
-    ganzhi_map = {gz:i for i,gz in enumerate(ganzhi)}
+# 在类定义后初始化 JIAZI 和 JIAZI_INDEX
+Ganzhi.JIAZI = [f"{Ganzhi.TIANGAN[i%10]}{Ganzhi.DIZHI[i%12]}" for i in range(60)]
+Ganzhi.JIAZI_INDEX = {gz:i for i,gz in enumerate(Ganzhi.JIAZI)}
 
-    # 校验输入合法性
-    if day_ganzhi not in ganzhi_map:
-        raise ValueError("无效的日干支")
-    current_idx = ganzhi_map[day_ganzhi]
 
-    # 逆向查找符头
-    futou, days_ago = None, 0
-    for steps in range(60):
-        check_idx = (current_idx - steps) % 60
-        check_gz = ganzhi[check_idx]
-        zhi_type = ''
-        step_day = 0
-        # 置闰法：仅匹配甲子、甲午、己卯、己酉 这里定位的是上元第一天
-        if method == '置闰' and check_gz in {'甲子','甲午','己卯','己酉'}:
-            futou = check_gz
-            days_ago = steps
-            step_day = days_ago % 5 +1
-            if 0 <= days_ago <= 5:
-                zhi_type = "上元"
-            elif 6 <= days_ago <= 10:
-                zhi_type = "中元"
-            elif 11 <= days_ago <= 15:
-                zhi_type = "下元"
+class Jieqi:
+    # (太阳黄经, 月份, 名称)
+    INFO = [
+        (315, 2, "立春"), (330, 2, "雨水"), (345, 3, "惊蛰"), (0, 3, "春分"),
+        (15,  4, "清明"), (30,  4, "谷雨"), (45,  5, "立夏"), (60, 5, "小满"),
+        (75,  6, "芒种"), (90,  6, "夏至"), (105, 7, "小暑"), (120, 7, "大暑"),
+        (135, 8, "立秋"), (150, 8, "处暑"), (165, 9, "白露"), (180, 9, "秋分"),
+        (195,10, "寒露"), (210,10, "霜降"), (225,11, "立冬"), (240,11, "小雪"),
+        (255,12, "大雪"), (270,12, "冬至"), (285, 1, "小寒"), (300, 1, "大寒"),
+    ]
+    ORDER = {name:i for i, (_,_,name) in enumerate(INFO)}
+
+
+class Qimen:
+    PALACE_MAP = {
+        1: ("坎","北"), 2: ("坤","西南"), 3: ("震","东"),
+        4: ("巽","东南"), 5: ("中","中央"), 6: ("乾","西北"),
+        7: ("兑","西"), 8: ("艮","东北"), 9: ("离","南"),
+    }
+
+    # 九宫（不含中宫）遍历序
+    TRAVERSE_8 = [1,8,3,4,9,2,7,6]
+
+    # 三奇六仪排布序（你的口径）
+    QIYI_ORDER = ["戊","己","庚","辛","壬","癸","丁","丙","乙"]
+
+    # 九星旋转用序（你的口径）
+    STAR_ORIGIN_ARRAY = ["天蓬","天任","天冲","天辅","天英","天芮","天柱","天心"]
+
+    # 旬首 -> 六仪
+    XUNSHOU_LIUYI = {"甲子":"戊","甲戌":"己","甲申":"庚","甲午":"辛","甲辰":"壬","甲寅":"癸"}
+
+    MEN_ORDER = ["休","生","伤","杜","景","死","惊","开"]
+    SHEN_YANG = ["值符","腾蛇","太阴","六合","白虎","玄武","九地","九天"]
+    SHEN_YIN  = ["值符","九天","九地","玄武","白虎","六合","太阴","腾蛇"]
+
+    ZHIRUN_FUTOU = {"甲子","甲午","己卯","己酉"}
+
+    YANG_JU = {
+        "冬至":{"上元":1,"中元":7,"下元":4},
+        "小寒":{"上元":2,"中元":8,"下元":5},
+        "大寒":{"上元":3,"中元":9,"下元":6},
+        "立春":{"上元":8,"中元":5,"下元":2},
+        "雨水":{"上元":9,"中元":6,"下元":3},
+        "惊蛰":{"上元":1,"中元":7,"下元":4},
+        "春分":{"上元":3,"中元":9,"下元":6},
+        "清明":{"上元":4,"中元":1,"下元":7},
+        "谷雨":{"上元":5,"中元":2,"下元":8},
+        "立夏":{"上元":4,"中元":1,"下元":7},
+        "小满":{"上元":5,"中元":2,"下元":8},
+        "芒种":{"上元":6,"中元":3,"下元":9},
+    }
+    YIN_JU = {
+        "夏至":{"上元":9,"中元":3,"下元":6},
+        "小暑":{"上元":8,"中元":2,"下元":5},
+        "大暑":{"上元":7,"中元":1,"下元":4},
+        "立秋":{"上元":2,"中元":5,"下元":8},
+        "处暑":{"上元":1,"中元":4,"下元":7},
+        "白露":{"上元":9,"中元":3,"下元":6},
+        "秋分":{"上元":7,"中元":6,"下元":5},
+        "寒露":{"上元":6,"中元":5,"下元":4},
+        "霜降":{"上元":5,"中元":4,"下元":3},
+        "立冬":{"上元":6,"中元":5,"下元":4},
+        "小雪":{"上元":5,"中元":8,"下元":3},
+        "大雪":{"上元":4,"中元":3,"下元":2},
+    }
+
+
+def _naive(dt: datetime) -> datetime:
+    """统一成 naive datetime（去 tzinfo）用于比较，避免混用 tz 带来的坑。"""
+    return dt.replace(tzinfo=None)
+
+
+def _rotate(seq: List[str], steps: int) -> List[str]:
+    d = deque(seq)
+    d.rotate(steps)
+    return list(d)
+
+
+# -----------------------------------------------------------------------------
+# 天文计算（带缓存）
+# -----------------------------------------------------------------------------
+load.directory = AstronomyConfig.EPHEMERIS_DIR
+ts = load.timescale()
+eph = load(AstronomyConfig.EPHEMERIS_FILE)
+
+
+class Astronomy:
+    @staticmethod
+    def sun_longitude(t) -> float:
+        astro = eph["earth"].at(t).observe(eph["sun"])
+        _, lon, _ = astro.ecliptic_latlon()
+        return lon.degrees % 360
+
+    @staticmethod
+    @lru_cache(maxsize=256)
+    def find_lichun(year: int) -> datetime:
+        start = ts.utc(year, 2, 1)
+        end   = ts.utc(year, 2, 15)
+        t0, t1 = start, end
+        for _ in range(AstronomyConfig.BINARY_SEARCH_ITERATIONS):
+            tm = ts.tt_jd((t0.tt + t1.tt) / 2)
+            if Astronomy.sun_longitude(tm) >= AstronomyConfig.LICHUN_DEGREE:
+                t1 = tm
             else:
-                zhi_type = "上元"
-            break
+                t0 = tm
+        return t1.utc_datetime()
 
-        # 拆补法：匹配所有甲/己日
-        if method == '拆补' and check_gz[0] in {'甲','己'}:
-            futou = check_gz
-            days_ago = steps
-            # 确定三元
-            zhi_type = {
-                '子':'上元', '午':'上元', '卯':'上元', '酉':'上元',
-                '寅':'中元', '申':'中元', '巳':'中元', '亥':'中元',
-                '辰':'下元', '戌':'下元', '丑':'下元', '未':'下元'
-            }[futou[1]]
-            break
+    @staticmethod
+    @lru_cache(maxsize=4096)
+    def jieqi_time(year: int, target_degree: int) -> datetime:
+        # 找到该黄经对应的“标称月份”，然后向前后各扩一个月做二分范围
+        month = next((m for deg, m, _ in Jieqi.INFO if deg == target_degree), 1)
 
-    return {'符头': futou, '上中下元': zhi_type, '距离天数': days_ago, '某元第几天': step_day}
+        start_year, start_month = year, month - 1
+        if start_month < 1:
+            start_month = 12
+            start_year -= 1
 
-class QimenPan:
-    def __init__(self, ju_number,is_yang,current_time,shigan):
-        self.ju_number = ju_number
-        self.is_yang = is_yang
-        self.current_time = current_time
-        self.shigan = shigan
-        # 初始化九宫数据结构（增加天禽星处理）
-        self.palaces = {num: {
-            'earth': None, 'sky': None, 'door': None, 
-            'star': None, 'shen': None
-        } for num in PALACE_MAP}
-    def arrange_earth_plate(self):
-        # 正确顺序：六仪(戊己庚辛壬癸) + 三奇(乙丙丁)
-        qiyi_order = ["戊","己","庚","辛","壬","癸","丁","丙","乙"]  
-        
-        # 确定戊的起始宫位（阳遁=局数，阴遁=10-局数）
-        start_pos = self.ju_number if self.is_yang else 10 - self.ju_number
-        
-        # 生成九宫遍历路径（阳遁顺行，阴遁逆行）
-        positions = []
-        current = start_pos
-        for _ in range(9):
-            positions.append(current)
-            current = current % 9 + 1 if self.is_yang else (current - 2) % 9 + 1
-        
-        # 填充天干（六仪→三奇循环）  
-        for i, pos in enumerate(positions):
-            self.palaces[pos]['earth'] = qiyi_order[i % 6] if i <6 else qiyi_order[6 + (i-6)%3]
+        end_year, end_month = year, month + 1
+        if end_month > 12:
+            end_month = 1
+            end_year += 1
 
-    def print_pan(self):
-        print(self.is_yang)
-        print(self.ju_number)
+        start = ts.utc(start_year, start_month, 1)
+        end   = ts.utc(end_year, end_month, 1)
+
+        t0, t1 = start, end
+        target = target_degree % 360
+        for _ in range(AstronomyConfig.BINARY_SEARCH_ITERATIONS):
+            tm = ts.tt_jd((t0.tt + t1.tt) / 2)
+            if Astronomy.sun_longitude(tm) >= target:
+                t1 = tm
+            else:
+                t0 = tm
+        return t1.utc_datetime()
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def solstices(year: int) -> Tuple[datetime, datetime]:
+        summer = Astronomy.jieqi_time(year, 90)   # 夏至
+        winter = Astronomy.jieqi_time(year, 270)  # 冬至
+        return summer, winter
 
 
+# -----------------------------------------------------------------------------
+# 干支
+# -----------------------------------------------------------------------------
+class GanzhiCalc:
+    @staticmethod
+    def year_gz(dt_utc: datetime) -> str:
+        year = dt_utc.year
+        lichun = Astronomy.find_lichun(year)
+        calc_year = year if dt_utc >= lichun else year - 1
+        idx = (calc_year - Ganzhi.BASE_YEAR) % 60
+        return Ganzhi.TIANGAN[idx % 10] + Ganzhi.DIZHI[idx % 12]
+
+    @staticmethod
+    def jieqi_near(dt_utc: datetime, forward: bool = True) -> Optional[Tuple[datetime, str]]:
+        # 只算三年*24，但由于 jieqi_time 有缓存，性能可接受
+        events: List[Tuple[datetime, str]] = []
+        for y in (dt_utc.year - 1, dt_utc.year, dt_utc.year + 1):
+            for deg, _, name in Jieqi.INFO:
+                events.append((Astronomy.jieqi_time(y, deg), name))
+        events.sort(key=lambda x: x[0])
+
+        if forward:
+            for t, name in reversed(events):
+                if t <= dt_utc:
+                    return t, name
+        else:
+            for t, name in events:
+                if t > dt_utc:
+                    return t, name
+        return None
+
+    @staticmethod
+    def month_gz(dt_utc: datetime) -> str:
+        year_gan = GanzhiCalc.year_gz(dt_utc)[0]
+        found = GanzhiCalc.jieqi_near(dt_utc, forward=True)
+        if not found:
+            raise ValueError("无法确定节气以计算月干支")
+        _, jieqi_name = found
+
+        idx = Jieqi.ORDER[jieqi_name]
+        month_num = idx // 2  # 0..11（正月..腊月）
+
+        start_gan = Ganzhi.YEAR_GAN_TO_MONTH_START[year_gan]
+        gan_idx = (Ganzhi.TIANGAN.index(start_gan) + month_num) % 10
+        zhi_idx = (month_num + 2) % 12  # 正月建寅
+        return Ganzhi.TIANGAN[gan_idx] + Ganzhi.DIZHI[zhi_idx]
+
+    @staticmethod
+    def day_hour_gz(dt_local: datetime) -> Tuple[str, str]:
+        # 日：23点后算下一天
+        date_for_day = dt_local.date() + timedelta(days=1) if dt_local.hour >= 23 else dt_local.date()
+        days_diff = (date_for_day - Ganzhi.BASE_DATE).days
+        i = days_diff % 60
+        day_gz = Ganzhi.JIAZI[i]
+
+        # 时：23点归 24 方便算 (h+1)//2
+        h = 24 if dt_local.hour == 23 else dt_local.hour
+        zhi_index = ((h + 1) // 2) % 12
+        shi_zhi = Ganzhi.DIZHI[zhi_index]
+
+        # 五鼠遁日：按日干起时干
+        ri_gan_idx = Ganzhi.TIANGAN.index(day_gz[0])
+        start_map = {0:0, 5:0, 1:2, 6:2, 2:4, 7:4, 3:6, 8:6, 4:8, 9:8}
+        start = start_map[ri_gan_idx]
+        shi_gan = Ganzhi.TIANGAN[(start + zhi_index) % 10]
+        hour_gz = shi_gan + shi_zhi
+        return day_gz, hour_gz
+
+    @staticmethod
+    def xunshou(hour_gz: str) -> str:
+        gan_idx = Ganzhi.TIANGAN_ORDER[hour_gz[0]]
+        zhi_idx = Ganzhi.DIZHI_ORDER[hour_gz[1]]
+        delta = (zhi_idx - gan_idx) % 12
+        return {0:"甲子",10:"甲戌",8:"甲申",6:"甲午",4:"甲辰",2:"甲寅"}[delta]
+
+
+# -----------------------------------------------------------------------------
+# 符头（置闰 / 拆补）
+# -----------------------------------------------------------------------------
+class Futou:
+    @staticmethod
+    def details(day_gz: str, method: str = "置闰") -> Dict[str, object]:
+        if day_gz not in Ganzhi.JIAZI_INDEX:
+            raise ValueError(f"无效的日干支: {day_gz}")
+
+        cur = Ganzhi.JIAZI_INDEX[day_gz]
+        futou = None
+        days_ago = 0
+        yuan = "上元"
+        step_day = 1
+
+        for steps in range(60):
+            gz = Ganzhi.JIAZI[(cur - steps) % 60]
+
+            if method == "置闰" and gz in Qimen.ZHIRUN_FUTOU:
+                futou = gz
+                days_ago = steps
+                step_day = days_ago % 5 + 1
+                if 0 <= days_ago <= 5:
+                    yuan = "上元"
+                elif 6 <= days_ago <= 10:
+                    yuan = "中元"
+                elif 11 <= days_ago <= 15:
+                    yuan = "下元"
+                else:
+                    yuan = "上元"
+                break
+
+            if method == "拆补" and gz[0] in {"甲","己"}:
+                futou = gz
+                days_ago = steps
+                zhi2yuan = {
+                    "子":"上元","午":"上元","卯":"上元","酉":"上元",
+                    "寅":"中元","申":"中元","巳":"中元","亥":"中元",
+                    "辰":"下元","戌":"下元","丑":"下元","未":"下元",
+                }
+                yuan = zhi2yuan[futou[1]]
+                step_day = days_ago % 5 + 1
+                break
+
+        return {"符头": futou, "上中下元": yuan, "符头差日": days_ago, "某元第几天": step_day}
+
+
+# -----------------------------------------------------------------------------
+# 主排盘
+# -----------------------------------------------------------------------------
 class QiMenDunjiaPan:
-    def __init__(self, input_datetime_str):
+    def __init__(self, input_datetime_str: str):
         self.input_dt = datetime.strptime(input_datetime_str, "%Y-%m-%d %H:%M:%S")
+        # 你的原代码把 input_dt 强行当 UTC；这里保留，但建议你后续明确：输入究竟是本地还是UTC
         self.input_utc = self.input_dt.replace(tzinfo=timezone.utc)
 
+        self.palaces: Dict[int, Dict[str, Optional[str]]] = {
+            k: {"earth": None, "sky": None, "door": None, "star": None, "shen": None}
+            for k in Qimen.PALACE_MAP.keys()
+        }
+
+        self.year_gz = self.month_gz = self.day_gz = self.hour_gz = None
+        self.futou_date: Optional[datetime] = None
+
+        self.period: Optional[str] = None
+        self.curr_jieqi: Optional[str] = None
+        self.curr_yuan: Optional[str] = None
+        self.is_yang: Optional[bool] = None
+        self.ju_number: Optional[int] = None
+
+        self.xunshou_gz: Optional[str] = None
+        self.xunshou_origin_pos: Optional[int] = None
+
+        self.zhishi_pos: Optional[int] = None
+        self.zhishi_men: Optional[str] = None
+
+        self._earth_pos_by_gan: Dict[str, int] = {}   # 地盘排完后建立索引
+        self._dipan_8: List[str] = []                 # 地盘8宫（按TRAVERSE_8）
+
+
+    # ---- 1) 干支 ----
     def calculate_ganzhi(self):
-        """计算干支"""
-        self.year_gz = get_year_ganzhi(self.input_utc)
-        self.month_gz = get_yue_ganzhi(self.input_utc)
-        self.day_gz, self.hour_gz = get_day_houre_ganzhi(self.input_dt.strftime('%Y-%m-%d %H:%M:%S'))
-        print(self.year_gz,self.month_gz,self.day_gz, self.hour_gz)
+        self.year_gz = GanzhiCalc.year_gz(self.input_utc)
+        self.month_gz = GanzhiCalc.month_gz(self.input_utc)
+        self.day_gz, self.hour_gz = GanzhiCalc.day_hour_gz(self.input_dt)
+        logger.info(f"干支: {self.year_gz}年 {self.month_gz}月 {self.day_gz}日 {self.hour_gz}时")
 
-    def determine_yinyang(self):
-        """定性阴阳遁"""
-        # jieqi_time, jieqi_name = find_jieqi(self.futou_jieqi_time)
-        # self.jieqi_name = jieqi_name
-        # self.jieqi_time = jieqi_time
-        lon = get_solar_longitude(self.futou_jieqi_time.year, self.futou_jieqi_time.month, self.futou_jieqi_time.day,
-                                  self.futou_jieqi_time.hour, self.futou_jieqi_time.minute)
-        self.is_yang = lon >= 270 or lon < 90
-        # print(jieqi_time, jieqi_name)
+    # ---- 2) 符头日 ----
+    def calculate_futou_date(self):
+        info = Futou.details(self.day_gz, method="置闰")
+        diff = info["符头差日"]
+        self.futou_date = datetime.combine(self.input_dt.date() - timedelta(days=diff), self.input_dt.time())
+        logger.info(f"符头日期: {self.futou_date}")
 
-    def determine_futou_sanyuan(self):
-        """获取符头及上中下元"""
-        futou_info = get_futou_details(self.day_gz)
-        self.futou = futou_info['符头']
-        self.sanyuan = futou_info['上中下元']
-        self.futou_days_diff = futou_info['距离天数']
-        self.stepday = futou_info['某元第几天']
-        # 将 date 转换为 datetime，使用当天零点
-        self.futou_date = datetime.combine(
-            self.input_dt.date() - timedelta(days=self.futou_days_diff),
-            self.input_dt.time(),   # 时间设为 00:00:00
-            tzinfo=timezone.utc
-        )
-        jieqi_time, jieqi_name =  find_jieqi(self.input_utc)
-        self.jieqi_time = jieqi_time
-        self.jieqi_name = jieqi_name
-        print(jieqi_time, jieqi_name)
-        print(self.jieqi_time, self.futou_date)
-        if self.jieqi_time >= self.futou_date:
-            '''如果节气大于符头'''
-            self.futou_jieqi_name = self.jieqi_name
-            self.futou_jieqi_time = self.jieqi_time
-        else: 
-            '''这里需要根据符头修正节气, 取符头节气'''
-            jieqi_time_f, jieqi_name_f =  find_jieqi(self.futou_date)
-            self.futou_jieqi_name = jieqi_name_f
-            self.futou_jieqi_time = jieqi_time_f
-        '''其实计算阴阳遁取决于符头的节气'''
-        self.determine_yinyang()
-        print(self.futou, self.sanyuan, self.futou_days_diff, self.futou_date, self.stepday, self.futou_jieqi_time, self.futou_jieqi_name)
+    # ---- 3) 定局：节气/三元/阴阳遁/局数（沿用你现有口径） ----
+    def determine_jieqi_yuan_ju(self):
+        assert self.futou_date is not None
 
-    def determine_ju_number(self):
-        """获取局数"""
-        ju_mapping = yang_ju_mapping if self.is_yang else yin_ju_mapping
-        self.ju_number = ju_mapping[self.futou_jieqi_name][self.sanyuan]
+        summer, winter = Astronomy.solstices(self.futou_date.year)
+        f = _naive(self.futou_date)
+        s = _naive(summer)
+        w = _naive(winter)
 
-    def create_pan(self):
-        self.qimen_pan = QimenPan(
-            ju_number=self.ju_number,
-            is_yang=self.is_yang,
-            current_time=self.input_dt,
-            shigan=self.hour_gz
-        )
-        self.qimen_pan.arrange_earth_plate()
-        # self.qimen_pan.arrange_heaven_plate()
-        # self.qimen_pan.arrange_sky_plate(self.hour_gz)
-        # self.qimen_pan.arrange_doors()
-        # self.qimen_pan.arrange_shen()
+        if f < s:
+            # 夏至前：参考上一年冬至
+            _, prev_w = Astronomy.solstices(self.futou_date.year - 1)
+            self.period = "冬至"
+            effective_jieqi_dt = _naive(prev_w)
+        elif f < w:
+            self.period = "夏至"
+            effective_jieqi_dt = _naive(summer)
+        else:
+            self.period = "冬至"
+            effective_jieqi_dt = _naive(winter)
 
-    def run(self):
+        # 参考节气的日干支 -> 再求其符头（置闰口径）
+        eff_day_gz, _ = GanzhiCalc.day_hour_gz(effective_jieqi_dt)
+        eff_futou = Futou.details(eff_day_gz, method="置闰")
+        eff_diff = eff_futou["符头差日"]
+        eff_futou_date = datetime.combine(effective_jieqi_dt.date() - timedelta(days=eff_diff), effective_jieqi_dt.time())
+
+        # 置闰触发：>9 天
+        if eff_diff > 9:
+            logger.info("触发置闰")
+            if self.period == "冬至":
+                self.period = "大雪"
+            elif self.period == "夏至":
+                self.period = "芒种"
+
+        # 输入日期与“参考符头日期”差（按日期00:00）
+        input_00 = _naive(self.input_dt.replace(hour=0, minute=0, second=0, microsecond=0))
+        futou_00 = _naive(eff_futou_date.replace(hour=0, minute=0, second=0, microsecond=0))
+        diff_days = (input_00 - futou_00).days
+
+        quotient, remainder = divmod(diff_days, 15)
+
+        # 起始节气索引（在节气列表中定位 self.period）
+        start_index = next((i for i, (_, _, name) in enumerate(Jieqi.INFO) if name == self.period), None)
+        if start_index is None:
+            raise ValueError(f"未找到起始节气：{self.period}")
+
+        target_index = (start_index + quotient) % len(Jieqi.INFO)
+        self.curr_jieqi = Jieqi.INFO[target_index][2]
+
+        yuan_idx, _ = divmod(remainder, 5)
+        self.curr_yuan = {0:"上元", 1:"中元", 2:"下元"}.get(yuan_idx, "上元")
+
+        if self.curr_jieqi in Qimen.YANG_JU:
+            self.is_yang = True
+            self.ju_number = Qimen.YANG_JU[self.curr_jieqi][self.curr_yuan]
+        elif self.curr_jieqi in Qimen.YIN_JU:
+            self.is_yang = False
+            self.ju_number = Qimen.YIN_JU[self.curr_jieqi][self.curr_yuan]
+        else:
+            raise ValueError(f"未找到局数映射：节气={self.curr_jieqi} 元={self.curr_yuan}")
+
+        logger.info(f"节气/元: {self.curr_jieqi} {self.curr_yuan}，局：{'阳遁' if self.is_yang else '阴遁'}{self.ju_number}")
+
+    # ---- 4) 地盘（三奇六仪） ----
+    def arrange_earth(self):
+        assert self.ju_number is not None and self.is_yang is not None
+
+        start = self.ju_number
+        positions = []
+        cur = start
+        for _ in range(9):
+            positions.append(cur)
+            cur = (cur % 9 + 1) if self.is_yang else ((cur - 2) % 9 + 1)
+
+        for i, pos in enumerate(positions):
+            if i < 6:
+                self.palaces[pos]["earth"] = Qimen.QIYI_ORDER[i]
+            else:
+                self.palaces[pos]["earth"] = Qimen.QIYI_ORDER[6 + (i - 6) % 3]
+
+        # 建立索引：天干 -> 宫位（中宫也可能出现）
+        self._earth_pos_by_gan = {}
+        for pos, data in self.palaces.items():
+            if data["earth"]:
+                self._earth_pos_by_gan[data["earth"]] = pos
+
+        self._dipan_8 = [self.palaces[p]["earth"] for p in Qimen.TRAVERSE_8]
+        logger.info("地盘排布完成")
+
+    # ---- 5) 天盘 + 九星 ----
+    def arrange_sky_and_stars(self):
+        assert self.hour_gz is not None
+
+        positions9 = Qimen.TRAVERSE_8 + [5]
+        shigan = self.hour_gz[0]
+
+        self.xunshou_gz = GanzhiCalc.xunshou(self.hour_gz)
+        xunshou_liuyi = Qimen.XUNSHOU_LIUYI[self.xunshou_gz]
+        origin_pos = self._earth_pos(xunshou_liuyi)
+        origin_pos = 2 if origin_pos == 5 else origin_pos
+        self.xunshou_origin_pos = origin_pos
+
+        target_pos = self._earth_pos(shigan)
+        target_pos = 2 if target_pos == 5 else target_pos
+
+        steps = positions9.index(target_pos) - positions9.index(origin_pos)
+
+        stars = deque(Qimen.STAR_ORIGIN_ARRAY)
+        stars.rotate(steps)
+
+        qiyi = deque(self._dipan_8)
+        qiyi.rotate(steps)
+
+        for i, pos in enumerate(Qimen.TRAVERSE_8):
+            self.palaces[pos]["sky"] = qiyi[i]
+            self.palaces[pos]["star"] = stars[i]
+
+        self.palaces[5]["sky"] = self.palaces[5]["earth"]
+        self.palaces[5]["star"] = "天禽"
+
+        logger.info(f"旬首: {self.xunshou_gz}，旬首宫: {origin_pos}，时干宫: {target_pos}，旋转步数: {steps}")
+        logger.info("天盘/九星排布完成")
+
+    # ---- 6) 八门 ----
+    def arrange_doors(self):
+        assert self.xunshou_gz is not None and self.hour_gz is not None and self.xunshou_origin_pos is not None
+        positions9 = Qimen.TRAVERSE_8 + [5]
+
+        xun_idx = Ganzhi.JIAZI_INDEX[self.xunshou_gz]
+        cur_idx = Ganzhi.JIAZI_INDEX[self.hour_gz]
+        diff = cur_idx - xun_idx
+
+        xun_earth_pos = self._earth_pos(Qimen.XUNSHOU_LIUYI[self.xunshou_gz])
+        if self.is_yang:
+            zhishi_pos = (xun_earth_pos + diff) % 9
+        else:
+            zhishi_pos = (xun_earth_pos - diff + 9) % 9
+        zhishi_pos = 9 if zhishi_pos == 0 else zhishi_pos
+        zhishi_pos = 2 if zhishi_pos == 5 else zhishi_pos
+        self.zhishi_pos = zhishi_pos
+
+        men_index = positions9.index(self.xunshou_origin_pos)
+        self.zhishi_men = Qimen.MEN_ORDER[men_index]
+
+        steps = positions9.index(self.zhishi_pos) - positions9.index(self.xunshou_origin_pos)
+        men = deque(Qimen.MEN_ORDER)
+        men.rotate(steps)
+
+        for pos, m in zip(Qimen.TRAVERSE_8, men):
+            self.palaces[pos]["door"] = m
+
+        logger.info(f"值使门: {self.zhishi_men}，值使宫: {self.zhishi_pos}")
+        logger.info("八门排布完成")
+
+    # ---- 7) 八神 ----
+    def arrange_shen(self):
+        assert self.hour_gz is not None
+        shen_order = Qimen.SHEN_YANG if self.is_yang else Qimen.SHEN_YIN
+
+        shigan_pos = self._earth_pos(self.hour_gz[0])
+        shigan_pos = 2 if shigan_pos == 5 else shigan_pos
+        idx = Qimen.TRAVERSE_8.index(shigan_pos)
+
+        shen = deque(shen_order)
+        shen.rotate(idx)
+
+        for pos, s in zip(Qimen.TRAVERSE_8, shen):
+            self.palaces[pos]["shen"] = s
+
+        logger.info("八神排布完成")
+
+    # ---- helper ----
+    def _earth_pos(self, gan: str) -> int:
+        return self._earth_pos_by_gan.get(gan, 5)
+
+    # ---- output ----
+    def result_dict(self) -> Dict:
+        return {
+            "input_time": self.input_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "ganzhi": {"year": self.year_gz, "month": self.month_gz, "day": self.day_gz, "hour": self.hour_gz},
+            "jieqi": self.curr_jieqi,
+            "yuan": self.curr_yuan,
+            "ju_type": "阳遁" if self.is_yang else "阴遁",
+            "ju_number": self.ju_number,
+            "xunshou": self.xunshou_gz,
+            "zhishi_men": self.zhishi_men,
+            "palaces": self.palaces,
+        }
+
+    def print_result(self):
+        print("\n" + "=" * 60)
+        print("奇门遁甲排盘结果")
+        print("=" * 60)
+        print(f"输入时间: {self.input_dt}")
+        print(f"干支: {self.year_gz}年 {self.month_gz}月 {self.day_gz}日 {self.hour_gz}时")
+        print(f"节气: {self.curr_jieqi} {self.curr_yuan}")
+        print(f"局数: {'阳遁' if self.is_yang else '阴遁'}{self.ju_number}局")
+        print(f"旬首: {self.xunshou_gz}")
+        print(f"值使门: {self.zhishi_men}")
+        print("-" * 60)
+        for pos in Qimen.TRAVERSE_8 + [5]:
+            name, direction = Qimen.PALACE_MAP[pos]
+            d = self.palaces[pos]
+            print(f"{pos}宫 {name}({direction}): 地盘={d['earth']} 天盘={d['sky']} 星={d['star']} 门={d['door']} 神={d['shen']}")
+        print("=" * 60)
+
+    # ---- run ----
+    def run(self) -> Dict:
         self.calculate_ganzhi()
-        # self.determine_yinyang()
-        self.determine_futou_sanyuan()
-        self.determine_ju_number()
-        self.create_pan()
-        self.qimen_pan.print_pan()
+        self.calculate_futou_date()
+        self.determine_jieqi_yuan_ju()
+        self.arrange_earth()
+        self.arrange_sky_and_stars()
+        self.arrange_doors()
+        self.arrange_shen()
+        logger.info("排盘完成")
+        return self.result_dict()
 
 
-if __name__ == '__main__':
-    datetime_str = "2024-11-19 01:30:00" #f8
-    # datetime_str = "2025-02-28 01:30:00" #t9
-    qimen = QiMenDunjiaPan(datetime_str)
-    qimen.run()
+# -----------------------------------------------------------------------------
+# main
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    test_cases = [
+        "2024-11-19 20:00:00",
+        "2025-02-28 18:30:00",
+        "2024-06-07 16:30:00",
+        "2025-03-13 04:00:00",
+        "2025-10-23 03:00:00",
+    ]
+    dt_str = test_cases[4]
+    pan = QiMenDunjiaPan(dt_str)
+    pan.run()
+    pan.print_result()

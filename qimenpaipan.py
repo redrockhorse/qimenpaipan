@@ -175,6 +175,53 @@ class QimenConstants:
     
     # 置闰符头对应关系
     ZHIRUN_FUTOU = {'甲子', '甲午', '己卯', '己酉'}
+    
+    # 十天干墓库对应地支及奇门宫位
+    # 天干入墓：天盘干落在其墓库对应宫位即为入墓
+    TIANGAN_MUKU = {
+        '甲': {'地支': '未', '宫位': 2},   # 坤二宫
+        '乙': {'地支': '戌', '宫位': 6},   # 乾六宫
+        '丙': {'地支': '戌', '宫位': 6},   # 乾六宫
+        '丁': {'地支': '丑', '宫位': 8},   # 艮八宫
+        '戊': {'地支': '戌', '宫位': 6},   # 乾六宫
+        '己': {'地支': '丑', '宫位': 8},   # 艮八宫
+        '庚': {'地支': '丑', '宫位': 8},   # 艮八宫
+        '辛': {'地支': '辰', '宫位': 4},   # 巽四宫
+        '壬': {'地支': '辰', '宫位': 4},   # 巽四宫
+        '癸': {'地支': '未', '宫位': 2},   # 坤二宫
+    }
+    
+    # 六仪击刑的宫位对应
+    # 六仪击刑：天盘六仪落在其击刑宫位即为击刑
+    LIUYI_JIXING = {
+        '戊': {'旬首': '甲子戊', '击刑宫位': 3, '刑理': '子刑卯', '地支关系': '子（戊）加震（卯）'},   # 震三宫
+        '己': {'旬首': '甲戌己', '击刑宫位': 2, '刑理': '戌刑未', '地支关系': '戌（己）加坤（未）'},   # 坤二宫
+        '庚': {'旬首': '甲申庚', '击刑宫位': 8, '刑理': '申刑寅', '地支关系': '申（庚）加艮（寅）'},   # 艮八宫
+        '辛': {'旬首': '甲午辛', '击刑宫位': 9, '刑理': '午午自刑', '地支关系': '午（辛）加离（午）'},   # 离九宫
+        '壬': {'旬首': '甲辰壬', '击刑宫位': 4, '刑理': '辰辰自刑', '地支关系': '辰（壬）加巽（辰）'},   # 巽四宫
+        '癸': {'旬首': '甲寅癸', '击刑宫位': 4, '刑理': '寅刑巳', '地支关系': '寅（癸）加巽（巳）'},   # 巽四宫
+    }
+    
+    # 马星：根据时支确定马星地支及所落宫位
+    # 时支 -> (马星地支, 宫位)
+    MAXING = {
+        '申': ('寅', 8), '子': ('寅', 8), '辰': ('寅', 8),   # 艮八宫
+        '亥': ('巳', 4), '卯': ('巳', 4), '未': ('巳', 4),   # 巽四宫
+        '寅': ('申', 2), '午': ('申', 2), '戌': ('申', 2),   # 坤二宫
+        '巳': ('亥', 6), '酉': ('亥', 6), '丑': ('亥', 6),   # 乾六宫
+    }
+    
+    # 门迫：门与宫位五行相克
+    # (门, 宫位) -> 门迫描述
+    MEN_PO = {
+        ('伤', 2): '木门落土宫', ('伤', 8): '木门落土宫',
+        ('杜', 2): '木门落土宫', ('杜', 8): '木门落土宫',
+        ('惊', 3): '金门落木宫', ('惊', 4): '金门落木宫',
+        ('开', 3): '金门落木宫', ('开', 4): '金门落木宫',
+        ('景', 6): '火门落金宫', ('景', 7): '火门落金宫',
+        ('休', 9): '水门落火宫',
+        ('生', 1): '土门落水宫', ('死', 1): '土门落水宫',
+    }
 
 
 # ============================================================================
@@ -818,6 +865,14 @@ class QiMenDunjiaPan:
         self.palaces[5]['sky'] = self.palaces[5]['earth']
         self.palaces[5]['star'] = '天禽'
         
+        # 天芮星所在宫的天盘干需加5宫天盘干（天禽随天芮）
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            if self.palaces[pos]['star'] == '天芮':
+                sky_self = self.palaces[pos]['sky']
+                sky_5 = self.palaces[5]['sky']
+                self.palaces[pos]['sky'] = f"{sky_self}/{sky_5}" if sky_5 != sky_self else sky_self
+                break
+        
         logger.info("天盘和九星排布完成")
     
     def arrange_doors(self):
@@ -903,6 +958,17 @@ class QiMenDunjiaPan:
     # 辅助方法
     # ========================================================================
     
+    def _get_earth_display(self, pos: int) -> str:
+        """
+        获取地盘干的显示值。2宫需显示寄宫关系（中宫寄坤宫）：
+        - 2宫：2宫地盘干 + 5宫地盘干
+        """
+        raw = self.palaces[pos]['earth']
+        if pos == 2:
+            other = self.palaces[5]['earth']
+            return f"{raw}/{other}" if other and other != raw else raw
+        return raw
+    
     def _find_earth_pos(self, target_gan: str) -> int:
         """
         找到地盘天干对应的宫位
@@ -933,6 +999,122 @@ class QiMenDunjiaPan:
                 return palace_num
         return 5  # 默认返回中宫
     
+    def get_rumu_palaces(self) -> List[Dict]:
+        """
+        计算哪些宫位的天盘干入墓
+        
+        天盘干入墓：天盘干落在其墓库对应宫位即为入墓
+        例如：甲墓在未(坤二宫)，若天盘甲在2宫则入墓
+        
+        Returns:
+            list: 入墓信息列表，每项为 {'宫位': int, '天盘干': str, '墓库地支': str, '宫名': str}
+        """
+        rumu_list = []
+        for pos, data in self.palaces.items():
+            sky_raw = data['sky']
+            if not sky_raw:
+                continue
+            # 天芮所在宫可能为 "戊/己" 格式，需分开判断
+            for gan in sky_raw.split('/'):
+                gan = gan.strip()
+                if gan and gan in QimenConstants.TIANGAN_MUKU:
+                    muku_info = QimenConstants.TIANGAN_MUKU[gan]
+                    if muku_info['宫位'] == pos:
+                        palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                        rumu_list.append({
+                            '宫位': pos,
+                            '天盘干': gan,
+                            '墓库地支': muku_info['地支'],
+                            '宫名': palace_name
+                        })
+        return rumu_list
+    
+    def get_liuyi_jixing(self) -> List[Dict]:
+        """
+        计算哪些宫位的天盘六仪击刑
+        
+        六仪击刑：天盘六仪（戊己庚辛壬癸）落在其击刑宫位即为击刑
+        例如：戊（甲子戊）击刑宫位在震三宫，若天盘戊在3宫则击刑
+        
+        Returns:
+            list: 击刑信息列表，每项为 {'宫位': int, '六仪': str, '旬首': str, '刑理': str, '地支关系': str, '宫名': str}
+        """
+        jixing_list = []
+        for pos, data in self.palaces.items():
+            sky_raw = data['sky']
+            if not sky_raw:
+                continue
+            for gan in sky_raw.split('/'):
+                gan = gan.strip()
+                if gan and gan in QimenConstants.LIUYI_JIXING:
+                    jx_info = QimenConstants.LIUYI_JIXING[gan]
+                    if jx_info['击刑宫位'] == pos:
+                        palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                        jixing_list.append({
+                            '宫位': pos,
+                            '六仪': gan,
+                            '旬首': jx_info['旬首'],
+                            '刑理': jx_info['刑理'],
+                            '地支关系': jx_info['地支关系'],
+                            '宫名': palace_name
+                        })
+        return jixing_list
+    
+    def get_men_po(self) -> List[Dict]:
+        """
+        计算哪些宫位门迫
+        
+        门迫：门与宫位五行相克
+        伤门、杜门（木）落坤二宫、艮八宫（土）→ 门迫
+        惊门、开门（金）落震三宫、巽四宫（木）→ 门迫
+        景门（火）落乾六宫、兑七宫（金）→ 门迫
+        休门（水）落离九宫（火）→ 门迫
+        生门、死门（土）落坎一宫（水）→ 门迫
+        
+        Returns:
+            list: 门迫信息列表，每项为 {'宫位': int, '门': str, '宫名': str, '描述': str}
+        """
+        men_po_list = []
+        for pos, data in self.palaces.items():
+            men = data.get('door')
+            if not men:
+                continue
+            key = (men, pos)
+            if key in QimenConstants.MEN_PO:
+                palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                men_po_list.append({
+                    '宫位': pos,
+                    '门': men,
+                    '宫名': palace_name,
+                    '描述': QimenConstants.MEN_PO[key]
+                })
+        return men_po_list
+    
+    def get_maxing_palace(self) -> Optional[Dict]:
+        """
+        计算马星所落宫位
+        
+        根据时支确定马星地支及奇门宫位：
+        申、子、辰 → 寅 → 艮八宫
+        亥、卯、未 → 巳 → 巽四宫
+        寅、午、戌 → 申 → 坤二宫
+        巳、酉、丑 → 亥 → 乾六宫
+        
+        Returns:
+            dict: {'时支': str, '马星地支': str, '宫位': int, '宫名': str} 或 None
+        """
+        shi_zhi = self.hour_gz[1]  # 时支
+        if shi_zhi not in QimenConstants.MAXING:
+            return None
+        maxing_zhi, pos = QimenConstants.MAXING[shi_zhi]
+        palace_name, _ = QimenConstants.PALACE_MAP[pos]
+        return {
+            '时支': shi_zhi,
+            '马星地支': maxing_zhi,
+            '宫位': pos,
+            '宫名': palace_name
+        }
+    
     def print_result(self):
         """打印排盘结果"""
         print("\n" + "=" * 60)
@@ -944,6 +1126,29 @@ class QiMenDunjiaPan:
         print(f"局数: {'阳遁' if self.is_yang else '阴遁'}{self.ju_number}局")
         print(f"旬首: {self.xunshou_ganzhi}")
         print(f"值使门: {self.zhishi_men}")
+        rumu_list = self.get_rumu_palaces()
+        if rumu_list:
+            rumu_str = ', '.join(f"{r['宫名']}宫{r['天盘干']}(墓在{r['墓库地支']})" for r in rumu_list)
+            print(f"天盘干入墓: {rumu_str}")
+        else:
+            print("天盘干入墓: 无")
+        jixing_list = self.get_liuyi_jixing()
+        if jixing_list:
+            jixing_str = ', '.join(f"{r['宫名']}宫{r['六仪']}({r['刑理']})" for r in jixing_list)
+            print(f"六仪击刑: {jixing_str}")
+        else:
+            print("六仪击刑: 无")
+        men_po_list = self.get_men_po()
+        if men_po_list:
+            men_po_str = ', '.join(f"{r['宫名']}宫{r['门']}门({r['描述']})" for r in men_po_list)
+            print(f"门迫: {men_po_str}")
+        else:
+            print("门迫: 无")
+        maxing_info = self.get_maxing_palace()
+        if maxing_info:
+            print(f"马星: {maxing_info['宫名']}宫(马星地支{maxing_info['马星地支']}，时支{maxing_info['时支']})")
+        else:
+            print("马星: 无")
         print("=" * 60)
         print("\n九宫排盘:")
         print("-" * 60)
@@ -951,8 +1156,9 @@ class QiMenDunjiaPan:
         for pos in QimenConstants.PALACE_TRAVERSE_ORDER + [5]:
             palace_name, direction = QimenConstants.PALACE_MAP[pos]
             data = self.palaces[pos]
+            earth_display = self._get_earth_display(pos)
             print(f"{pos}宫 {palace_name}({direction}):")
-            print(f"  地盘: {data['earth']}")
+            print(f"  地盘: {earth_display}")
             print(f"  天盘: {data['sky']}")
             print(f"  九星: {data['star']}")
             print(f"  八门: {data['door']}")
@@ -968,6 +1174,17 @@ class QiMenDunjiaPan:
         Returns:
             dict: 包含所有排盘信息的字典
         """
+        # 构建包含显示值的宫位数据（2宫、5宫的地盘干使用寄宫显示）
+        palaces_export = {}
+        for pos, data in self.palaces.items():
+            palace_copy = dict(data)
+            palace_copy['earth'] = self._get_earth_display(pos)
+            palaces_export[pos] = palace_copy
+        
+        rumu_list = self.get_rumu_palaces()
+        jixing_list = self.get_liuyi_jixing()
+        men_po_list = self.get_men_po()
+        maxing_info = self.get_maxing_palace()
         return {
             'input_time': self.input_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'ganzhi': {
@@ -982,7 +1199,11 @@ class QiMenDunjiaPan:
             'ju_number': self.ju_number,
             'xunshou': self.xunshou_ganzhi,
             'zhishi_men': self.zhishi_men,
-            'palaces': self.palaces
+            'tianpan_rumu': rumu_list,  # 天盘干入墓的宫位列表
+            'liuyi_jixing': jixing_list,  # 六仪击刑的宫位列表
+            'men_po': men_po_list,  # 门迫的宫位列表
+            'maxing': maxing_info,  # 马星所落宫位
+            'palaces': palaces_export
         }
     
     def run(self) -> Dict:
@@ -1020,7 +1241,9 @@ if __name__ == '__main__':
         "2025-02-28 18:30:00",
         "2024-06-07 16:30:00",
         "2025-03-13 04:00:00",
-        "2025-04-15 18:18:01"
+        # "2025-04-15 18:18:01"
+        # "2025-10-23 03:00:00"
+        "2026-02-12 22:00:00"
     ]
     
     # 选择测试用例
