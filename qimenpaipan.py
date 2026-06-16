@@ -529,6 +529,21 @@ class FutouCalculator:
     """符头计算类"""
     
     @staticmethod
+    def yuan_from_days_since_futou(days: int) -> str:
+        """
+        根据距符头天数确定三元（置闰法）
+        
+        每个节气15天：上元6天(0-5)、中元5天(6-10)、下元5天(11-15)
+        """
+        if 0 <= days <= 5:
+            return "上元"
+        elif 6 <= days <= 10:
+            return "中元"
+        elif 11 <= days <= 15:
+            return "下元"
+        return "上元"
+    
+    @staticmethod
     def get_futou_details(day_ganzhi: str, method: str = '置闰') -> Dict:
         """
         根据日干支和定局方法计算符头、三元及距离天数
@@ -567,16 +582,7 @@ class FutouCalculator:
                 futou = check_gz
                 days_ago = steps
                 step_day = days_ago % 5 + 1
-                
-                # 确定三元
-                if 0 <= days_ago <= 5:
-                    zhi_type = "上元"
-                elif 6 <= days_ago <= 10:
-                    zhi_type = "中元"
-                elif 11 <= days_ago <= 15:
-                    zhi_type = "下元"
-                else:
-                    zhi_type = "上元"
+                zhi_type = FutouCalculator.yuan_from_days_since_futou(days_ago)
                 break
             
             # 拆补法：匹配所有甲/己日
@@ -769,10 +775,8 @@ class QiMenDunjiaPan:
             
             self.curr_jieqi = target_name
             
-            # 确定三元
-            quotient_yuan, _ = divmod(remainder, 5)
-            yuan_map = {0: '上元', 1: '中元', 2: '下元'}
-            self.curr_yuan = yuan_map.get(quotient_yuan, '上元')
+            # 确定三元（与符头计算使用相同的置闰边界）
+            self.curr_yuan = FutouCalculator.yuan_from_days_since_futou(remainder)
             
             logger.info(f"当前节气: {self.curr_jieqi}, 三元: {self.curr_yuan}")
             
@@ -938,7 +942,7 @@ class QiMenDunjiaPan:
         )
         
         # 获取时干所在宫位（八神值符所在宫位）
-        shigan_pos = self._find_earth_pos(self.hour_gz[0])
+        shigan_pos = self._get_shigan_position(self.hour_gz[0])
         shigan_pos = 2 if shigan_pos == 5 else shigan_pos
         
         # 计算旋转步数
@@ -986,14 +990,13 @@ class QiMenDunjiaPan:
     
     def _get_shigan_position(self, shigan: str) -> int:
         """
-        根据时干在宫位字典中查找对应的宫位
+        获取时干加临的地盘宫位
         
-        Args:
-            shigan: 时干
-            
-        Returns:
-            int: 对应的宫位号
+        甲隐于六仪之下，时干为甲时用本旬六仪在地盘的宫位。
         """
+        if shigan == '甲':
+            liuyi = QimenConstants.XUNSHOU_LIUYI[self.xunshou_ganzhi]
+            return self._find_earth_pos(liuyi)
         for palace_num, palace_data in self.palaces.items():
             if palace_data['earth'] == shigan:
                 return palace_num
@@ -1243,7 +1246,8 @@ if __name__ == '__main__':
         "2025-03-13 04:00:00",
         # "2025-04-15 18:18:01"
         # "2025-10-23 03:00:00"
-        "2026-02-12 22:00:00"
+        # "2026-02-12 22:00:00",
+        "2026-06-13 09:00:00"
     ]
     
     # 选择测试用例
