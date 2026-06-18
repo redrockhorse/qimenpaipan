@@ -613,13 +613,15 @@ class FutouCalculator:
 class QiMenDunjiaPan:
     """奇门遁甲排盘主类"""
     
-    def __init__(self, input_datetime_str: str):
+    def __init__(self, input_datetime_str: str, ju_method: str = '置闰'):
         """
         初始化排盘
         
         Args:
             input_datetime_str: 输入时间字符串，格式："YYYY-MM-DD HH:MM:SS"
+            ju_method: 定局方法，"置闰"（默认）或 "拆补"
         """
+        self.ju_method = ju_method
         self.input_dt = datetime.strptime(input_datetime_str, "%Y-%m-%d %H:%M:%S")
         self.input_utc = self.input_dt.replace(tzinfo=timezone.utc)
         
@@ -678,7 +680,7 @@ class QiMenDunjiaPan:
     
     def calculate_futou(self):
         """计算符头日期"""
-        futou_info = FutouCalculator.get_futou_details(self.day_gz)
+        futou_info = FutouCalculator.get_futou_details(self.day_gz, self.ju_method)
         futou_days_diff = futou_info['符头差日']
         
         self.futou_date = datetime.combine(
@@ -726,7 +728,7 @@ class QiMenDunjiaPan:
         )
         
         # 获取符头信息
-        futou_info = FutouCalculator.get_futou_details(effective_day_ganzhi)
+        futou_info = FutouCalculator.get_futou_details(effective_day_ganzhi, self.ju_method)
         futou_days_diff = futou_info['符头差日']
         
         # 计算符头日期
@@ -775,22 +777,23 @@ class QiMenDunjiaPan:
             
             self.curr_jieqi = target_name
             
-            # 确定三元（与符头计算使用相同的置闰边界）
-            self.curr_yuan = FutouCalculator.yuan_from_days_since_futou(remainder)
+            # 三元以当日符头为准（置闰法）
+            day_futou_info = FutouCalculator.get_futou_details(self.day_gz, self.ju_method)
+            self.curr_yuan = day_futou_info['上中下元']
             
-            logger.info(f"当前节气: {self.curr_jieqi}, 三元: {self.curr_yuan}")
-            
-            # 确定阴阳遁和局数
+            # 置闰法：阴阳遁由符头推进的节气决定，可超前于实际交节
             if self.curr_jieqi in QimenConstants.YANG_JU_MAPPING:
                 self.is_yang = True
                 self.ju_number = QimenConstants.YANG_JU_MAPPING[self.curr_jieqi][self.curr_yuan]
+                logger.info(f"当前节气: {self.curr_jieqi}, 三元: {self.curr_yuan}")
                 logger.info(f"阳遁 {self.ju_number} 局")
             elif self.curr_jieqi in QimenConstants.YIN_JU_MAPPING:
                 self.is_yang = False
                 self.ju_number = QimenConstants.YIN_JU_MAPPING[self.curr_jieqi][self.curr_yuan]
+                logger.info(f"当前节气: {self.curr_jieqi}, 三元: {self.curr_yuan}")
                 logger.info(f"阴遁 {self.ju_number} 局")
             else:
-                raise ValueError(f"未找到对应的局数映射：节气={self.curr_jieqi}，元={self.curr_yuan}")
+                raise ValueError(f"未找到局数映射：节气={self.curr_jieqi} 元={self.curr_yuan}")
         else:
             raise ValueError(f"未找到起始节气：{self.period}")
     
@@ -1247,7 +1250,7 @@ if __name__ == '__main__':
         # "2025-04-15 18:18:01"
         # "2025-10-23 03:00:00"
         # "2026-02-12 22:00:00",
-        "2026-06-13 09:00:00"
+        "2026-06-19 00:00:00"
     ]
     
     # 选择测试用例
