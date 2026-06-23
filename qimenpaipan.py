@@ -777,9 +777,13 @@ class QiMenDunjiaPan:
             
             self.curr_jieqi = target_name
             
-            # 三元以当日符头为准（置闰法）
-            day_futou_info = FutouCalculator.get_futou_details(self.day_gz, self.ju_method)
-            self.curr_yuan = day_futou_info['上中下元']
+            # 置闰法：三元由当前节气内的天数（余数）决定，上元6天、中元5天、下元5天
+            # 拆补法：三元由当日符头的地支决定
+            if self.ju_method == '置闰':
+                self.curr_yuan = FutouCalculator.yuan_from_days_since_futou(remainder)
+            else:
+                day_futou_info = FutouCalculator.get_futou_details(self.day_gz, self.ju_method)
+                self.curr_yuan = day_futou_info['上中下元']
             
             # 置闰法：阴阳遁由符头推进的节气决定，可超前于实际交节
             if self.curr_jieqi in QimenConstants.YANG_JU_MAPPING:
@@ -1250,7 +1254,8 @@ if __name__ == '__main__':
         # "2025-04-15 18:18:01"
         # "2025-10-23 03:00:00"
         # "2026-02-12 22:00:00",
-        "2026-06-19 00:00:00"
+        # "2026-06-19 00:00:00"
+        "2026-06-24 01:00:00"
     ]
     
     # 选择测试用例
