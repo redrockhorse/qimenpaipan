@@ -223,6 +223,63 @@ class QimenConstants:
         ('生', 1): '土门落水宫', ('死', 1): '土门落水宫',
     }
 
+    # ===== 新增：空亡（旬空）=====
+    # 六甲旬空亡地支
+    XUNKONG = {
+        "甲子": ["戌", "亥"],
+        "甲戌": ["申", "酉"],
+        "甲申": ["午", "未"],
+        "甲午": ["辰", "巳"],
+        "甲辰": ["寅", "卯"],
+        "甲寅": ["子", "丑"],
+    }
+
+    # 地支→宫位映射（用于空亡落宫）
+    DIZHI_PALACE = {
+        "子": 1, "丑": 8, "寅": 8, "卯": 3, "辰": 4, "巳": 4,
+        "午": 9, "未": 2, "申": 2, "酉": 7, "戌": 6, "亥": 6
+    }
+
+    # ===== 新增：伏吟反吟原始宫位 =====
+    # 九星原始宫位（用于伏吟判断）
+    STAR_ORIGIN_POS_MAP = {
+        "天蓬": 1, "天任": 8, "天冲": 3, "天辅": 4,
+        "天英": 9, "天芮": 2, "天柱": 7, "天心": 6,
+        "天禽": 5
+    }
+
+    # ===== 新增：九宫五行 =====
+    PALACE_WUXING = {
+        1: "水", 2: "土", 3: "木", 4: "木",
+        5: "土", 6: "金", 7: "金", 8: "土", 9: "火"
+    }
+
+    # ===== 新增：八门五行 =====
+    MEN_WUXING = {
+        "休": "水", "生": "土", "伤": "木", "杜": "木",
+        "景": "火", "死": "土", "惊": "金", "开": "金"
+    }
+
+    # ===== 新增：九星五行 =====
+    STAR_WUXING = {
+        "天蓬": "水", "天任": "土", "天冲": "木", "天辅": "木",
+        "天英": "火", "天芮": "土", "天柱": "金", "天心": "金",
+        "天禽": "土"
+    }
+
+    # ===== 新增：天干五行 =====
+    TIANGAN_WUXING = {
+        "甲": "木", "乙": "木", "丙": "火", "丁": "火",
+        "戊": "土", "己": "土", "庚": "金", "辛": "金",
+        "壬": "水", "癸": "水"
+    }
+
+    # ===== 新增：八神五行（用于辅助判断） =====
+    SHEN_WUXING = {
+        "值符": "木", "腾蛇": "火", "太阴": "金", "六合": "木",
+        "白虎": "金", "玄武": "水", "九地": "土", "九天": "金"
+    }
+
 
 # ============================================================================
 # 天文计算模块
@@ -1124,6 +1181,222 @@ class QiMenDunjiaPan:
             '宫位': pos,
             '宫名': palace_name
         }
+
+    # ========================================================================
+    # 新增：空亡、伏吟反吟、旺衰、格局判断
+    # ========================================================================
+
+    def get_kongwang(self) -> List[Dict]:
+        """
+        计算空亡（旬空）。
+        根据时干支所在旬，查出空亡地支，再映射到奇门宫位。
+        空亡宫力量减半，吉凶均不实。
+        """
+        xunkong_zhi = QimenConstants.XUNKONG.get(self.xunshou_ganzhi, [])
+        result = []
+        for zhi in xunkong_zhi:
+            pos = QimenConstants.DIZHI_PALACE.get(zhi)
+            if pos:
+                palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                result.append({
+                    '空亡地支': zhi,
+                    '宫位': pos,
+                    '宫名': palace_name
+                })
+        return result
+
+    def get_fuyin_fanyin(self) -> Dict:
+        """
+        伏吟：九星落在原始宫位，主停滞、闭塞、不动。
+        反吟：九星落在对冲宫位，主反复、变动、不顺。
+        """
+        # 对冲宫位
+        chong = {1: 9, 9: 1, 2: 8, 8: 2, 3: 7, 7: 3, 4: 6, 6: 4}
+
+        fuyin_list = []
+        fanyin_list = []
+
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            star = self.palaces[pos].get('star')
+            if not star or star == '天禽':
+                continue
+            origin = QimenConstants.STAR_ORIGIN_POS_MAP.get(star)
+            if origin is None:
+                continue
+            palace_name, _ = QimenConstants.PALACE_MAP[pos]
+            if pos == origin:
+                fuyin_list.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '九星': star, '类型': '伏吟',
+                    '含义': '停滞闭塞'
+                })
+            elif chong.get(pos) == origin:
+                fanyin_list.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '九星': star, '类型': '反吟',
+                    '含义': '反复变动'
+                })
+
+        return {
+            'fuyin': fuyin_list,
+            'fanyin': fanyin_list
+        }
+
+    def get_wangshuai(self) -> Dict:
+        """
+        计算九星和八门的旺衰。
+
+        九星旺衰看落宫五行与星五行的关系：
+        同行为旺，生我为相，我生为泄，我克为囚，克我为死。
+
+        八门旺衰同理。
+        """
+        # 五行生克关系
+        wuxing_sheng = {
+            "木": "火", "火": "土", "土": "金", "金": "水", "水": "木"
+        }
+        wuxing_ke = {
+            "木": "土", "土": "水", "水": "火", "火": "金", "金": "木"
+        }
+
+        def calc_state(obj_wx, palace_wx):
+            if obj_wx == palace_wx:
+                return "旺"
+            if wuxing_sheng.get(palace_wx) == obj_wx:  # 宫生星
+                return "相"
+            if wuxing_sheng.get(obj_wx) == palace_wx:  # 星生宫
+                return "泄"
+            if wuxing_ke.get(obj_wx) == palace_wx:
+                return "囚"
+            if wuxing_ke.get(palace_wx) == obj_wx:
+                return "死"
+            return "平"
+
+        star_states = []
+        men_states = []
+
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            palace_wx = QimenConstants.PALACE_WUXING.get(pos, "")
+            palace_name, _ = QimenConstants.PALACE_MAP[pos]
+
+            star = self.palaces[pos].get('star')
+            if star and star != '天禽':
+                star_wx = QimenConstants.STAR_WUXING.get(star, "")
+                state = calc_state(star_wx, palace_wx)
+                star_states.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '九星': star, '星五行': star_wx,
+                    '宫五行': palace_wx, '旺衰': state
+                })
+
+            door = self.palaces[pos].get('door')
+            if door:
+                door_wx = QimenConstants.MEN_WUXING.get(door, "")
+                state = calc_state(door_wx, palace_wx)
+                men_states.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '八门': door, '门五行': door_wx,
+                    '宫五行': palace_wx, '旺衰': state
+                })
+
+        return {'star_wangshuai': star_states, 'men_wangshuai': men_states}
+
+    def get_major_geju(self) -> List[Dict]:
+        """
+        检测常见重要格局。
+        仅检测经典高频格局，不做穷尽罗列。
+        """
+        geju_list = []
+
+        # 构建天盘干和地盘干的映射
+        palace_tianpan = {}
+        palace_dipan = {}
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            sky = self.palaces[pos].get('sky', '')
+            earth = self.palaces[pos].get('earth', '')
+            if sky:
+                # 取第一个干（处理 "戊/己" 格式）
+                palace_tianpan[pos] = sky.split('/')[0].strip()
+            if earth:
+                palace_dipan[pos] = earth.split('/')[0].strip()
+
+        # 1. 青龙返首：天盘戊加地盘丙（值符宫）
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            if palace_tianpan.get(pos) == '戊' and palace_dipan.get(pos) == '丙':
+                palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                geju_list.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '格局': '青龙返首',
+                    '组合': '戊加丙',
+                    '含义': '大吉，谋事大成，但忌入墓、击刑、门迫'
+                })
+
+        # 2. 飞鸟跌穴：天盘丙加地盘戊
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            if palace_tianpan.get(pos) == '丙' and palace_dipan.get(pos) == '戊':
+                palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                geju_list.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '格局': '飞鸟跌穴',
+                    '组合': '丙加戊',
+                    '含义': '大吉，谋为生发，百事可成'
+                })
+
+        # 3. 五不遇时：时干克日干
+        day_gan = self.day_gz[0]
+        hour_gan = self.hour_gz[0]
+        day_wx = QimenConstants.TIANGAN_WUXING.get(day_gan, "")
+        hour_wx = QimenConstants.TIANGAN_WUXING.get(hour_gan, "")
+        wuxing_ke = {"木":"土","土":"水","水":"火","火":"金","金":"木"}
+        if wuxing_ke.get(hour_wx) == day_wx:
+            geju_list.append({
+                '宫位': 0, '宫名': '全局',
+                '格局': '五不遇时',
+                '组合': f'时干{hour_gan}({hour_wx})克日干{day_gan}({day_wx})',
+                '含义': '凶，事多不顺，用兵尤忌'
+            })
+
+        # 4. 三奇得使：乙丙丁三奇临值使门宫
+        zhishi_pos = self.zhishi_pos
+        for qi in ['乙', '丙', '丁']:
+            for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+                if palace_tianpan.get(pos) == qi and pos == zhishi_pos:
+                    palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                    geju_list.append({
+                        '宫位': pos, '宫名': palace_name,
+                        '格局': f'{qi}奇得使',
+                        '组合': f'{qi}临值使宫',
+                        '含义': '吉，奇仪得力，行事顺遂'
+                    })
+
+        # 5. 三奇入墓：乙丙丁天盘干入墓
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            sky = palace_tianpan.get(pos, '')
+            if sky in ('乙', '丙', '丁'):
+                muku = QimenConstants.TIANGAN_MUKU.get(sky)
+                if muku and muku['宫位'] == pos:
+                    palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                    geju_list.append({
+                        '宫位': pos, '宫名': palace_name,
+                        '格局': f'{sky}奇入墓',
+                        '组合': f'{sky}入{muku["地支"]}墓',
+                        '含义': '不吉，奇仪力量被埋没'
+                    })
+
+        # 6. 值符冲锋：值符宫与庚同宫
+        for pos in QimenConstants.PALACE_TRAVERSE_ORDER:
+            shen = self.palaces[pos].get('shen', '')
+            sky = palace_tianpan.get(pos, '')
+            if shen == '值符' and sky == '庚':
+                palace_name, _ = QimenConstants.PALACE_MAP[pos]
+                geju_list.append({
+                    '宫位': pos, '宫名': palace_name,
+                    '格局': '值符飞宫',
+                    '组合': '值符遇庚',
+                    '含义': '有变，主流转、移位、不稳固'
+                })
+
+        return geju_list
     
     def print_result(self):
         """打印排盘结果"""
@@ -1213,7 +1486,12 @@ class QiMenDunjiaPan:
             'liuyi_jixing': jixing_list,  # 六仪击刑的宫位列表
             'men_po': men_po_list,  # 门迫的宫位列表
             'maxing': maxing_info,  # 马星所落宫位
-            'palaces': palaces_export
+            'palaces': palaces_export,
+            # ===== 新增字段 =====
+            'kongwang': self.get_kongwang(),
+            'fuyin_fanyin': self.get_fuyin_fanyin(),
+            'wangshuai': self.get_wangshuai(),
+            'major_geju': self.get_major_geju(),
         }
     
     def run(self) -> Dict:
