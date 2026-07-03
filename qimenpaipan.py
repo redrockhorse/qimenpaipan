@@ -17,6 +17,28 @@ from collections import deque
 from skyfield.api import load
 import logging
 
+# 全局统一使用北京时间（UTC+8）
+TZ_UTC8 = timezone(timedelta(hours=8))
+
+
+def utc_to_utc8(dt_utc: datetime) -> datetime:
+    """将 skyfield 返回的 naive UTC 时间转为 UTC+8（带时区）。"""
+    return dt_utc.replace(tzinfo=timezone.utc).astimezone(TZ_UTC8)
+
+
+def as_utc8(dt: datetime) -> datetime:
+    """将 naive 或 aware 时间统一为 UTC+8（带时区）。"""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TZ_UTC8)
+    return dt.astimezone(TZ_UTC8)
+
+
+def utc8_midnight(dt: datetime) -> datetime:
+    """取 UTC+8 日历日的 0 点（naive，用于日差计算）。"""
+    local = as_utc8(dt)
+    return datetime(local.year, local.month, local.day)
+
+
 # ============================================================================
 # 配置日志
 # ============================================================================
@@ -173,8 +195,14 @@ class QimenConstants:
     # 九宫遍历顺序（不含中宫）
     PALACE_TRAVERSE_ORDER = [1, 8, 3, 4, 9, 2, 7, 6]
     
-    # 置闰符头对应关系
+    # 置闰符头：上/中/下元各四日，每元统领5天（共15天/节气）
     ZHIRUN_FUTOU = {'甲子', '甲午', '己卯', '己酉'}
+    ZHIRUN_YUAN_FUTOU = {
+        '上元': {'甲子', '己卯', '甲午', '己酉'},
+        '中元': {'甲寅', '己巳', '甲申', '己亥'},
+        '下元': {'甲辰', '己丑', '甲戌', '己未'},
+    }
+    ZHIRUN_ALL_FUTOU = set().union(*ZHIRUN_YUAN_FUTOU.values())
     
     # 十天干墓库对应地支及奇门宫位
     # 天干入墓：天盘干落在其墓库对应宫位即为入墓
@@ -261,7 +289,7 @@ class AstronomyCalculator:
             year: 年份
             
         Returns:
-            datetime: 立春时间（UTC）
+            datetime: 立春时间（UTC+8）
         """
         start = ts.utc(year, 2, 1)
         end = ts.utc(year, 2, 15)
@@ -274,7 +302,7 @@ class AstronomyCalculator:
             else:
                 t0 = tm
         
-        return t1.utc_datetime()
+        return utc_to_utc8(t1.utc_datetime())
     
     @staticmethod
     def get_jieqi_time(year: int, target_degree: int) -> datetime:
@@ -286,7 +314,7 @@ class AstronomyCalculator:
             target_degree: 目标黄经度数
             
         Returns:
-            datetime: 节气时间（UTC）
+            datetime: 节气时间（UTC+8）
         """
         # 根据黄经度数确定对应的月份
         month = 1
@@ -320,7 +348,7 @@ class AstronomyCalculator:
             else:
                 t0 = tm
         
-        return t1.utc_datetime()
+        return utc_to_utc8(t1.utc_datetime())
     
     @staticmethod
     def get_solstices(year: int) -> Tuple[datetime, datetime]:
@@ -331,7 +359,7 @@ class AstronomyCalculator:
             year: 年份
             
         Returns:
-            tuple: (夏至时间, 冬至时间)
+            tuple: (夏至时间, 冬至时间)，均为 UTC+8
         """
         summer_solstice = None
         winter_solstice = None
@@ -366,11 +394,12 @@ class GanzhiCalculator:
         Returns:
             str: 年干支，如"甲子"
         """
-        year = input_datetime.year
+        local_dt = as_utc8(input_datetime)
+        year = local_dt.year
         lichun_current = AstronomyCalculator.find_lichun(year)
         
         # 判断输入日期是否在当前年立春之后
-        calc_year = year if input_datetime >= lichun_current else year - 1
+        calc_year = year if local_dt >= lichun_current else year - 1
         
         # 计算干支索引
         idx = (calc_year - GanzhiConstants.BASE_YEAR) % 60
@@ -392,9 +421,10 @@ class GanzhiCalculator:
         Returns:
             tuple: (节气时间, 节气名称) 或 None
         """
+        local_dt = as_utc8(input_dt)
         # 生成前后两年所有节气时间
         jieqi_events = []
-        for y in [input_dt.year - 1, input_dt.year, input_dt.year + 1]:
+        for y in [local_dt.year - 1, local_dt.year, local_dt.year + 1]:
             for degree, _, name in JieqiConstants.JIEQI_INFO:
                 jt = AstronomyCalculator.get_jieqi_time(y, degree)
                 jieqi_events.append((jt, name))
@@ -405,12 +435,12 @@ class GanzhiCalculator:
         if forward:
             # 向前找：找到最后一个小于等于输入时间的节气
             for i in range(len(jieqi_events) - 1, -1, -1):
-                if jieqi_events[i][0] <= input_dt:
+                if jieqi_events[i][0] <= local_dt:
                     return jieqi_events[i]
         else:
             # 向后找：找到第一个大于输入时间的节气
             for event in jieqi_events:
-                if event[0] > input_dt:
+                if event[0] > local_dt:
                     return event
         
         return None
@@ -427,10 +457,10 @@ class GanzhiCalculator:
             str: 月干支，如"丙寅"
         """
         # 获取年干
-        year_gan = GanzhiCalculator.get_year_ganzhi(input_dt)[0]
+        year_gan = GanzhiCalculator.get_year_ganzhi(as_utc8(input_dt))[0]
         
         # 获取对应节气及索引
-        jieqi_result = GanzhiCalculator.find_jieqi(input_dt)
+        jieqi_result = GanzhiCalculator.find_jieqi(as_utc8(input_dt))
         if not jieqi_result:
             raise ValueError("无法确定节气")
         
@@ -531,16 +561,33 @@ class FutouCalculator:
     @staticmethod
     def yuan_from_days_since_futou(days: int) -> str:
         """
-        根据距符头天数确定三元（置闰法）
-        
-        每个节气15天：上元6天(0-5)、中元5天(6-10)、下元5天(11-15)
+        根据距本节气上元第一天（置闰四仲符头）的天数确定三元。
+
+        每个节气15天：上元5天(0-4)、中元5天(5-9)、下元5天(10-14)。
         """
-        if 0 <= days <= 5:
+        if 0 <= days <= 4:
             return "上元"
-        elif 6 <= days <= 10:
+        elif 5 <= days <= 9:
             return "中元"
-        elif 11 <= days <= 15:
+        elif 10 <= days <= 14:
             return "下元"
+        return "上元"
+
+    @staticmethod
+    def zhihrun_yuan_from_day_ganzhi(day_ganzhi: str) -> str:
+        """置闰法：按十二符头统领关系确定当日所属三元。"""
+        ganzhi = [
+            f"{GanzhiConstants.TIANGAN[i % 10]}{GanzhiConstants.DIZHI[i % 12]}"
+            for i in range(60)
+        ]
+        if day_ganzhi not in ganzhi:
+            raise ValueError(f"无效的日干支: {day_ganzhi}")
+        current_idx = ganzhi.index(day_ganzhi)
+        for steps in range(60):
+            check_gz = ganzhi[(current_idx - steps) % 60]
+            for yuan, futou_set in QimenConstants.ZHIRUN_YUAN_FUTOU.items():
+                if check_gz in futou_set:
+                    return yuan
         return "上元"
     
     @staticmethod
@@ -622,8 +669,9 @@ class QiMenDunjiaPan:
             ju_method: 定局方法，"置闰"（默认）或 "拆补"
         """
         self.ju_method = ju_method
-        self.input_dt = datetime.strptime(input_datetime_str, "%Y-%m-%d %H:%M:%S")
-        self.input_utc = self.input_dt.replace(tzinfo=timezone.utc)
+        self.input_dt = datetime.strptime(
+            input_datetime_str, "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=TZ_UTC8)
         
         # 初始化九宫数据结构
         self.palaces = {
@@ -670,10 +718,10 @@ class QiMenDunjiaPan:
     
     def calculate_ganzhi(self):
         """计算干支"""
-        self.year_gz = GanzhiCalculator.get_year_ganzhi(self.input_utc)
-        self.month_gz = GanzhiCalculator.get_month_ganzhi(self.input_utc)
+        self.year_gz = GanzhiCalculator.get_year_ganzhi(self.input_dt)
+        self.month_gz = GanzhiCalculator.get_month_ganzhi(self.input_dt)
         self.day_gz, self.hour_gz = GanzhiCalculator.get_day_hour_ganzhi(
-            self.input_dt.strftime('%Y-%m-%d %H:%M:%S')
+            as_utc8(self.input_dt).strftime('%Y-%m-%d %H:%M:%S')
         )
         
         logger.info(f"干支: {self.year_gz}年 {self.month_gz}月 {self.day_gz}日 {self.hour_gz}时")
@@ -683,10 +731,11 @@ class QiMenDunjiaPan:
         futou_info = FutouCalculator.get_futou_details(self.day_gz, self.ju_method)
         futou_days_diff = futou_info['符头差日']
         
+        local_input = as_utc8(self.input_dt)
         self.futou_date = datetime.combine(
-            self.input_dt.date() - timedelta(days=futou_days_diff),
-            self.input_dt.time(),
-            tzinfo=self.input_dt.tzinfo if self.input_dt.tzinfo else None
+            local_input.date() - timedelta(days=futou_days_diff),
+            local_input.time(),
+            tzinfo=TZ_UTC8
         )
         
         logger.info(f"符头日期: {self.futou_date}")
@@ -698,31 +747,30 @@ class QiMenDunjiaPan:
             self.futou_date.year
         )
         
-        # 确保时区一致性
-        futou_date_naive = self.futou_date.replace(tzinfo=None)
-        summer_solstice_naive = summer_solstice.replace(tzinfo=None)
-        winter_solstice_naive = winter_solstice.replace(tzinfo=None)
+        # 统一为 UTC+8 再比较
+        futou_local = as_utc8(self.futou_date)
+        summer_local = as_utc8(summer_solstice)
+        winter_local = as_utc8(winter_solstice)
         
         # 判断符头日期在夏至和冬至的相对位置
-        if futou_date_naive < summer_solstice_naive:
+        if futou_local < summer_local:
             # 如果在夏至前，使用前一年的冬至
-            _, prev_winter = AstronomyCalculator.get_solstices(self.futou_date.year - 1)
-            prev_winter_naive = prev_winter.replace(tzinfo=None)
+            _, prev_winter = AstronomyCalculator.get_solstices(futou_local.year - 1)
             period = "夏至前"
             self.period = '冬至'
-            effective_jieqi = prev_winter_naive
-        elif futou_date_naive < winter_solstice_naive:
+            effective_jieqi = as_utc8(prev_winter)
+        elif futou_local < winter_local:
             period = "夏至后冬至前"
             self.period = '夏至'
-            effective_jieqi = summer_solstice_naive
+            effective_jieqi = summer_local
         else:
             period = "冬至后"
             self.period = '冬至'
-            effective_jieqi = winter_solstice_naive
+            effective_jieqi = winter_local
         
-        logger.info(f"符头日期 {self.futou_date} 在{period}")
+        logger.info(f"符头日期 {futou_local} 在{period}")
         
-        # 计算参考节气日期的日干支
+        # 计算参考节气日期的日干支（按 UTC+8 日历日）
         effective_day_ganzhi, _ = GanzhiCalculator.get_day_hour_ganzhi(
             effective_jieqi.strftime("%Y-%m-%d %H:%M:%S")
         )
@@ -735,7 +783,7 @@ class QiMenDunjiaPan:
         effective_futou_date = datetime.combine(
             effective_jieqi.date() - timedelta(days=futou_days_diff),
             effective_jieqi.time(),
-            tzinfo=effective_jieqi.tzinfo
+            tzinfo=TZ_UTC8
         )
         
         logger.info(f"参考节气: {self.period}, 时间: {effective_jieqi}")
@@ -749,13 +797,13 @@ class QiMenDunjiaPan:
             elif self.period == '夏至':
                 self.period = '芒种'
         
-        # 计算输入日期与符头日期的差值（只比较日期部分，使用00:00:00）
-        input_date_00 = self.input_dt.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-        futou_date_00 = effective_futou_date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        # 计算输入日期与符头日期的差值（UTC+8 日历日 0 点）
+        input_date_00 = utc8_midnight(self.input_dt)
+        futou_date_00 = utc8_midnight(effective_futou_date)
         input_futou_diff = (input_date_00 - futou_date_00).days
-        logger.info(f"输入日期（原始）: {self.input_dt.replace(tzinfo=None)}")
+        logger.info(f"输入日期（原始）: {as_utc8(self.input_dt).replace(tzinfo=None)}")
         logger.info(f"输入日期（计算用）: {input_date_00}")
-        logger.info(f"符头日期（原始）: {effective_futou_date.replace(tzinfo=None)}")
+        logger.info(f"符头日期（原始）: {as_utc8(effective_futou_date).replace(tzinfo=None)}")
         logger.info(f"符头日期（计算用）: {futou_date_00}")
         
         # 计算当前节气和三元
@@ -777,10 +825,10 @@ class QiMenDunjiaPan:
             
             self.curr_jieqi = target_name
             
-            # 置闰法：三元由当前节气内的天数（余数）决定，上元6天、中元5天、下元5天
+            # 置闰法：三元由当日十二符头统领关系决定（与元亨利贞等置闰排盘一致）
             # 拆补法：三元由当日符头的地支决定
             if self.ju_method == '置闰':
-                self.curr_yuan = FutouCalculator.yuan_from_days_since_futou(remainder)
+                self.curr_yuan = FutouCalculator.zhihrun_yuan_from_day_ganzhi(self.day_gz)
             else:
                 day_futou_info = FutouCalculator.get_futou_details(self.day_gz, self.ju_method)
                 self.curr_yuan = day_futou_info['上中下元']
@@ -1130,7 +1178,7 @@ class QiMenDunjiaPan:
         print("\n" + "=" * 60)
         print("奇门遁甲排盘结果")
         print("=" * 60)
-        print(f"输入时间: {self.input_dt}")
+        print(f"输入时间: {as_utc8(self.input_dt).strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"干支: {self.year_gz}年 {self.month_gz}月 {self.day_gz}日 {self.hour_gz}时")
         print(f"节气: {self.curr_jieqi} {self.curr_yuan}")
         print(f"局数: {'阳遁' if self.is_yang else '阴遁'}{self.ju_number}局")
@@ -1255,7 +1303,9 @@ if __name__ == '__main__':
         # "2025-10-23 03:00:00"
         # "2026-02-12 22:00:00",
         # "2026-06-19 00:00:00"
-        "2026-06-24 01:00:00"
+        # "2026-06-24 01:00:00"
+        # "2026-06-18 06:00:00",
+        "2026-06-29 03:00:00"
     ]
     
     # 选择测试用例
